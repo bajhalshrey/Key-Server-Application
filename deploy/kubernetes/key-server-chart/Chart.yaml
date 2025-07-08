@@ -1,0 +1,6 @@
+# deploy/kubernetes/key-server-chart/Chart.yaml
+apiVersion: v2
+name: key-server-app
+description: A Helm chart for the Key Server Application
+version: 0.1.0 # Chart version
+appVersion: "1.0.0" # Application version (can match your image tag)

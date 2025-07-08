@@ -1,0 +1,79 @@
+# deploy/kubernetes/key-server-chart/values.yaml (key parts to ensure are present)
+
+replicaCount: 1 # Default number of replicas if autoscaling is disabled
+
+image:
+  repository: key-server-app # Matches your Docker image name
+  tag: latest # Matches your Docker image tag
+  pullPolicy: IfNotPresent # Or Always, depending on your needs. IfNotPresent is good for local testing with Kind.
+
+app: # Custom section for app-specific configurations
+  containerPort: 8080 # The port your Go application listens on
+  maxKeySize: 1024    # Example: A configurable maximum key size
+
+env: [] # You can add additional environment variables here as a list of key-value pairs
+# - name: MY_CUSTOM_ENV
+#   value: "my-value"
+
+serviceAccount:
+  create: true # Set to true to create a ServiceAccount
+  # If name is empty, it defaults to the full chart name as per _helpers.tpl
+  # name: "my-custom-serviceaccount"
+
+podAnnotations: {} # Optional annotations for the pod metadata
+# example:
+#   prometheus.io/scrape: "true"
+#   prometheus.io/port: "8080" # If your metrics endpoint is on 8080
+
+podSecurityContext: {} # For pod-level security context
+# example:
+#   runAsUser: 1000
+#   fsGroup: 2000
+
+securityContext: {} # For container-level security context
+# example:
+#   allowPrivilegeEscalation: false
+#   capabilities:
+#     drop:
+#     - ALL
+#   readOnlyRootFilesystem: true
+#   runAsNonRoot: true
+#   runAsUser: 1000
+
+livenessProbe:
+  initialDelaySeconds: 10 # Wait 10s before first check
+  periodSeconds: 5      # Check every 5s
+  timeoutSeconds: 3     # Timeout after 3s
+  successThreshold: 1   # 1 successful check to be considered healthy
+  failureThreshold: 3   # 3 consecutive failures to mark unhealthy
+
+readinessProbe:
+  initialDelaySeconds: 5  # Wait 5s before first check
+  periodSeconds: 5       # Check every 5s
+  timeoutSeconds: 3      # Timeout after 3s
+  successThreshold: 1    # 1 successful check to be considered ready
+  failureThreshold: 3    # 3 consecutive failures to mark unready
+
+resources: # Define CPU and Memory requests and limits
+  limits:
+    cpu: 200m # 0.2 CPU core
+    memory: 256Mi
+  requests:
+    cpu: 100m # 0.1 CPU core
+    memory: 128Mi
+
+autoscaling:
+  enabled: false # Set to true to enable Horizontal Pod Autoscaler (requires an HPA resource)
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+affinity: {}
+tolerations: {}
+
+# Service definition (make sure this is also in your values.yaml for service.yaml)
+service:
+  type: ClusterIP # Or NodePort, LoadBalancer
+  port: 8080      # Service port
+  # targetPort will be derived from app.containerPort in service.yaml

@@ -1,0 +1,16 @@
+# deploy/kubernetes/key-server-chart/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "key-server-app.fullname" . }}
+  labels:
+    {{- include "key-server-app.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http # References the "http" port name in the deployment's containerPort
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "key-server-app.selectorLabels" . | nindent 4 }}
