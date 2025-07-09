@@ -1,18 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "key-server-app.fullname" . }}
+  name: {{ include "key-server.fullname" . }}
   labels:
-    {{- include "key-server-app.labels" . | nindent 4 }}
+    {{- include "key-server.labels" . | nindent 4 }}
 spec:
-  # This section handles replica count. If autoscaling is enabled, replicas are managed by HPA.
-  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
-  {{- end }}
   selector:
-    # The selector MUST use 'matchLabels' to specify which pods it manages.
     matchLabels:
-      {{- include "key-server-app.selectorLabels" . | nindent 6 }} # <- This indention is crucial
+      {{- include "key-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -20,14 +16,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "key-server-app.selectorLabels" . | nindent 8 }}
+        {{- include "key-server.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # This specifies the ServiceAccount for the Pods to run as.
-      serviceAccountName: {{ include "key-server-app.serviceAccountName" . }}
+      serviceAccountName: {{ include "key-server.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -37,39 +32,37 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - name: http # This name must match targetPort in service.yaml
-              containerPort: {{ .Values.app.containerPort }} # Your application's listening port (e.g., 8080)
+            - name: https
+              containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
           env:
-            # Example environment variables for your Go application
-            # Adjust these names based on how your Go app reads configuration
-            - name: SRV_PORT
-              value: "{{ .Values.app.containerPort }}"
+            - name: PORT
+              value: "{{ .Values.service.targetPort }}"
             - name: MAX_KEY_SIZE
-              value: "{{ .Values.app.maxKeySize }}"
-            {{- if .Values.env }}
-            {{- toYaml .Values.env | nindent 12 }}
-            {{- end }}
+              value: "{{ .Values.config.maxKeySize }}"
+            # CORRECTED: Referencing tls.crt and tls.key as stored by Kubernetes in the secret
+            - name: TLS_CERT_FILE
+              value: "/etc/key-server/tls/tls.crt" # Path inside container for the certificate
+            - name: TLS_KEY_FILE
+              value: "/etc/key-server/tls/tls.key" # Path inside container for the private key
+          volumeMounts:
+            - name: tls-certs
+              mountPath: "/etc/key-server/tls"
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
-              port: http # References the named port "http" defined above
-              scheme: HTTPS # Important if your app serves HTTPS
-            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
-            successThreshold: {{ .Values.livenessProbe.successThreshold }}
-            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /ready
-              port: http # References the named port "http" defined above
-              scheme: HTTPS # Important if your app serves HTTPS
-            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
-            successThreshold: {{ .Values.readinessProbe.successThreshold }}
-            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
@@ -84,3 +77,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ .Release.Name }}-tls-secret

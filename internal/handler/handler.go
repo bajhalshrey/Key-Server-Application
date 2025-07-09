@@ -1,109 +1,81 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
-	"strconv" // For converting key length string to int
+	"strconv"
+	"strings"
 
-	"github.com/gorilla/mux" // For extracting path variables like {length}
-	// Important: These are typically *not* directly imported for the interfaces
-	// The interfaces below define the contract.
-	// You import them if you need to use concrete types or functions
-	// from these packages within THIS handler package, but for the handler
-	// struct's dependencies, using the interfaces is preferred.
-	// We keep them here in case other parts of your handler use them.
+	"github.com/bajhalshrey/Key-Server-Application/internal/keyservice"
+	"github.com/bajhalshrey/Key-Server-Application/internal/metrics"
 )
 
-// KeyService defines the interface for key generation operations.
-// The concrete implementation (e.g., `*keyservice.KeyService` from your `internal/keyservice` package)
-// must satisfy this interface. If its methods use pointer receivers, then the concrete instance
-// passed to NewHTTPHandler must be a pointer.
-type KeyService interface {
-	GenerateKey(length int) (string, error)
-	// Add other KeyService methods here if your handlers use them
-}
-
-// MetricsService defines the interface for recording application metrics.
-// The concrete implementation (e.g., `*metrics.PrometheusMetrics` from your `internal/metrics` package)
-// must satisfy this interface.
-type MetricsService interface {
-	RecordKeyGeneration(length int, success bool)
-	// RecordHealthCheck() // Uncomment if you add a specific metric for health checks
-}
-
-// HTTPHandler holds the dependencies required by your HTTP request handlers.
-// Its fields are the *interface types* defined above, not concrete service types.
+// HTTPHandler handles HTTP requests for the key server.
 type HTTPHandler struct {
-	keyService KeyService
-	metricsSvc MetricsService
+	keyService keyservice.KeyService  // <--- Uses the KeyService INTERFACE
+	metricsSvc metrics.MetricsService // Uses the MetricsService INTERFACE
 }
 
-// NewHTTPHandler creates and returns a new instance of HTTPHandler.
-// It accepts parameters of the *interface types* defined within this package.
-// The calling code (your main.go) is responsible for providing concrete instances
-// that implement these interfaces.
-// This is the correct way for dependency injection.
-func NewHTTPHandler(ks KeyService, ms MetricsService) *HTTPHandler {
+// NewHTTPHandler creates a new HTTPHandler instance.
+func NewHTTPHandler(ks keyservice.KeyService, ms metrics.MetricsService) *HTTPHandler {
 	return &HTTPHandler{
 		keyService: ks,
 		metricsSvc: ms,
 	}
 }
 
-// HealthCheck handles requests to the /health endpoint.
+// HealthCheck handles the /health endpoint.
 func (h *HTTPHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
-	// In a more complex app, you might check core dependencies here.
+	h.metricsSvc.IncHTTPStatusCounter(http.StatusOK)
 	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("Healthy"))
-	if err != nil {
-		log.Printf("Error writing health check response: %v", err)
-	}
+	fmt.Fprint(w, "Healthy")
 }
 
-// ReadinessCheck handles requests to the /ready endpoint.
-// This is the handler for the Kubernetes readiness probe.
+// ReadinessCheck handles the /ready endpoint.
 func (h *HTTPHandler) ReadinessCheck(w http.ResponseWriter, r *http.Request) {
-	// For a memory-based key server, simply being able to respond means it's ready.
+	h.metricsSvc.IncHTTPStatusCounter(http.StatusOK)
 	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("Ready to serve traffic!"))
-	if err != nil {
-		log.Printf("Error writing readiness response: %v", err)
-	}
+	fmt.Fprint(w, "Ready to serve traffic!")
 }
 
-// GenerateKey handles requests to generate a key of a specified length.
+// GenerateKey handles the /key/{length} endpoint.
 func (h *HTTPHandler) GenerateKey(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	lengthStr := vars["length"]
-
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 3 || parts[2] == "" {
+		http.Error(w, "Invalid key length. Must be a positive integer.\n", http.StatusBadRequest)
+		h.metricsSvc.IncHTTPStatusCounter(http.StatusBadRequest)
+		return
+	}
+	lengthStr := parts[2]
 	length, err := strconv.Atoi(lengthStr)
 	if err != nil {
-		http.Error(w, "Invalid key length. Must be a positive integer.", http.StatusBadRequest)
-		h.metricsSvc.RecordKeyGeneration(0, false)
+		http.Error(w, "Invalid key length. Must be a positive integer.\n", http.StatusBadRequest)
+		h.metricsSvc.IncHTTPStatusCounter(http.StatusBadRequest)
 		return
 	}
 
-	if length <= 0 {
-		http.Error(w, "Key length must be a positive integer.", http.StatusBadRequest)
-		h.metricsSvc.RecordKeyGeneration(length, false)
-		return
-	}
-
-	key, err := h.keyService.GenerateKey(length)
+	key, err := h.keyService.GenerateKey(length) // This call handles its own validation (length range)
 	if err != nil {
-		log.Printf("Error generating key for length %d: %v", length, err)
-		http.Error(w, fmt.Sprintf("Failed to generate key: %v", err), http.StatusInternalServerError)
+		if strings.Contains(err.Error(), "out of allowed range") {
+			http.Error(w, err.Error()+"\n", http.StatusBadRequest)
+			h.metricsSvc.IncHTTPStatusCounter(http.StatusBadRequest)
+			h.metricsSvc.RecordKeyGeneration(length, false)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Internal server error: Failed to generate key.\n"), http.StatusInternalServerError)
+		h.metricsSvc.IncHTTPStatusCounter(http.StatusInternalServerError)
 		h.metricsSvc.RecordKeyGeneration(length, false)
 		return
 	}
 
-	response := map[string]string{"key": key}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding key response: %v", err)
-	}
+	fmt.Fprintf(w, `{"key":"%s"}`+"\n", key)
+	h.metricsSvc.IncHTTPStatusCounter(http.StatusOK)
 	h.metricsSvc.RecordKeyGeneration(length, true)
+}
+
+// MetricsHandler returns the HTTP handler for Prometheus metrics.
+func (h *HTTPHandler) MetricsHandler() http.Handler {
+	return h.metricsSvc.MetricsHandler()
 }

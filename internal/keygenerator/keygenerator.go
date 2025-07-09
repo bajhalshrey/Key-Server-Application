@@ -1,38 +1,33 @@
-// internal/keygenerator/keygenerator.go
 package keygenerator
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 )
 
-// CryptoKeyGenerator defines the interface for key generation.
+// CryptoKeyGenerator defines the interface for cryptographic key generation.
 type CryptoKeyGenerator interface {
-	Generate(length int) (string, error)
+	Generate(length int) ([]byte, error) // Returns []byte, error
 }
 
-// cryptoKeyGenerator implements CryptoKeyGenerator using crypto/rand.
+// cryptoKeyGenerator implements the CryptoKeyGenerator interface.
 type cryptoKeyGenerator struct{}
 
-// NewCryptoKeyGenerator creates a new instance of cryptoKeyGenerator.
+// NewCryptoKeyGenerator creates a new instance of CryptoKeyGenerator.
 func NewCryptoKeyGenerator() CryptoKeyGenerator {
 	return &cryptoKeyGenerator{}
 }
 
-// Generate creates a cryptographically secure random key of the specified length (in bytes).
-// The key is returned as a base64 URL-encoded string.
-func (g *cryptoKeyGenerator) Generate(length int) (string, error) {
+// Generate generates a cryptographically secure random byte slice of the specified length.
+func (g *cryptoKeyGenerator) Generate(length int) ([]byte, error) { // Returns []byte, error
 	if length <= 0 {
-		return "", fmt.Errorf("key length must be positive, got %d", length)
+		return nil, fmt.Errorf("key length must be a positive integer")
 	}
 
-	keyBytes := make([]byte, length)
-	_, err := rand.Read(keyBytes)
+	key := make([]byte, length)
+	_, err := rand.Read(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to read random bytes for key generation: %w", err)
+		return nil, fmt.Errorf("failed to read random bytes: %w", err)
 	}
-
-	// Return the key as a base64 URL-encoded string to ensure it's web-safe
-	return base64.URLEncoding.EncodeToString(keyBytes), nil
+	return key, nil
 }

@@ -1,123 +1,121 @@
 #!/bin/bash
 
-# cleanup_all_deployments.sh
-# This script stops and removes all local deployments related to the Key Server application.
-# It should be run from the project's root directory.
+# cleanup.sh
+# This script performs a comprehensive cleanup of the Key Server application's
+# build artifacts, Docker containers/images, and Kubernetes resources.
 
-set -e # Exit immediately if a command exits with a non-zero status
+set -euo pipefail
 
-# Configuration (must match your project's naming)
-PROJECT_NAME="key-server" # Name used for local executable, Docker container, and Helm release
-HELM_CHART_PATH="./deploy/kubernetes/key-server-chart" # Path to your Helm chart
+# --- Configuration ---
+APP_NAME="key-server"
+TEST_APP_NAME="key-server-test" # Name for the test container/service
+LOCAL_APP_BINARY="./${APP_NAME}" # Path to the local binary
 
-# Function to print colored output
-print_status() {
-    echo "[INFO] $1"
+# Derived Kubernetes full application name (release-name-chart-name)
+# Based on Chart.yaml name: key-server-app and Helm release name: key-server
+K8S_FULL_APP_NAME="${APP_NAME}-key-server-app"
+
+
+# --- Helper Functions ---
+log_info() {
+    echo -e "[INFO] $1"
 }
 
-print_success() {
-    echo "[SUCCESS] $1"
+log_success() {
+    echo -e "[SUCCESS] $1"
 }
 
-print_warning() {
-    echo "[WARNING] $1"
+log_error() {
+    echo -e "[ERROR] $1"
+    # Do not exit here, allow other cleanup steps to run
 }
 
-print_error() {
-    echo "[ERROR] $1"
-}
-
-print_step() {
-    echo "--- $1 ---"
-}
-
-# --- Cleanup Local Go Application ---
-cleanup_local_app() {
-    print_step "Cleaning up local Go application processes"
-    if pgrep -f "./$PROJECT_NAME --srv-port" > /dev/null; then
-        print_status "Stopping running local '$PROJECT_NAME' processes..."
-        pkill -f "./$PROJECT_NAME --srv-port"
-        print_success "Local '$PROJECT_NAME' processes stopped."
+# Function to clean up local Go processes
+cleanup_local_go_processes() {
+    log_info "Cleaning up local Go application processes..."
+    if pgrep -f "${APP_NAME}" > /dev/null; then
+        pkill -f "${APP_NAME}" || log_error "Failed to kill local '${APP_NAME}' processes."
+        log_info "Killed existing '${APP_NAME}' processes."
     else
-        print_status "No local '$PROJECT_NAME' processes found running."
+        log_info "No local '${APP_NAME}' processes found running."
     fi
-    # Optionally remove the executable itself
-    if [ -f "./$PROJECT_NAME" ]; then
-        print_status "Removing local '$PROJECT_NAME' executable..."
-        rm "./$PROJECT_NAME"
-        print_success "Local '$PROJECT_NAME' executable removed."
+    # Ensure the local binary is removed
+    if [ -f "${LOCAL_APP_BINARY}" ]; then
+        rm "${LOCAL_APP_BINARY}" || log_error "Failed to remove local '${LOCAL_APP_BINARY}'."
+        log_info "Removing local '${LOCAL_APP_BINARY}' executable..."
+        log_success "Local '${LOCAL_APP_BINARY}' executable removed."
+    else
+        log_info "No local '${LOCAL_APP_BINARY}' executable found."
     fi
 }
 
-# --- Cleanup Docker Containers and Images ---
+# Function to clean up Docker containers and images
 cleanup_docker() {
-    print_step "Cleaning up Docker containers and images"
+    log_info "Stopping and removing Docker containers: ${APP_NAME}, ${TEST_APP_NAME}..."
+    docker stop "${APP_NAME}" "${TEST_APP_NAME}" >/dev/null 2>&1 || true
+    docker rm "${APP_NAME}" "${TEST_APP_NAME}" >/dev/null 2>&1 || true
+    log_success "Docker containers stopped and removed."
 
-    # Stop and remove running/exited containers
-    local containers_to_remove=$(docker ps -aq --filter "name=$PROJECT_NAME" --filter "name=${PROJECT_NAME}-test")
-    if [ -n "$containers_to_remove" ]; then
-        print_status "Stopping and removing Docker containers: $PROJECT_NAME, ${PROJECT_NAME}-test..."
-        docker stop $containers_to_remove >/dev/null 2>&1 || true
-        docker rm $containers_to_remove >/dev/null 2>&1 || true
-        print_success "Docker containers stopped and removed."
+    log_info "Removing Docker images for '${APP_NAME}'..."
+    if docker images -q "${APP_NAME}" > /dev/null; then
+        docker rmi "${APP_NAME}" >/dev/null 2>&1 || true
+        log_success "Docker images for '${APP_NAME}' removed."
     else
-        print_status "No Docker containers for '$PROJECT_NAME' found."
-    fi
-
-    # Remove images (optional, but good for clean slate)
-    local images_to_remove=$(docker images -q "$PROJECT_NAME")
-    if [ -n "$images_to_remove" ]; then
-        print_status "Removing Docker images for '$PROJECT_NAME'..."
-        docker rmi $images_to_remove >/dev/null 2>&1 || true
-        print_success "Docker images removed."
-    else
-        print_status "No Docker images for '$PROJECT_NAME' found."
+        log_info "No Docker images for '${APP_NAME}' found."
     fi
 }
 
-# --- Cleanup Kubernetes Deployments (Helm and Kind) ---
+# Function to clean up Kubernetes resources
 cleanup_kubernetes() {
-    print_step "Cleaning up Kubernetes deployments"
-
-    # Stop any active kubectl port-forward sessions
-    if pgrep -f "kubectl port-forward service/$PROJECT_NAME" > /dev/null; then
-        print_status "Stopping kubectl port-forward sessions..."
-        pkill -f "kubectl port-forward service/$PROJECT_NAME"
-        print_success "kubectl port-forward sessions stopped."
+    log_info "Cleaning up Kubernetes deployments..."
+    # Kill any kubectl port-forward sessions
+    if pgrep -f "kubectl port-forward" > /dev/null; then
+        pkill -f "kubectl port-forward" || log_error "Failed to kill kubectl port-forward sessions."
+        log_info "Killed existing kubectl port-forward sessions."
     else
-        print_status "No kubectl port-forward sessions found for '$PROJECT_NAME'."
+        log_info "No kubectl port-forward sessions found."
     fi
 
-    # Uninstall Helm release
-    if helm status "$PROJECT_NAME" &> /dev/null; then
-        print_status "Uninstalling Helm release '$PROJECT_NAME'..."
-        helm uninstall "$PROJECT_NAME"
-        print_success "Helm release '$PROJECT_NAME' uninstalled."
+    # Check and delete Helm release if it exists
+    if helm status "${APP_NAME}" &> /dev/null; then
+        log_info "Uninstalling Helm release '${APP_NAME}'..."
+        helm uninstall "${APP_NAME}" || log_error "Failed to uninstall Helm release."
+        log_success "Helm release '${APP_NAME}' uninstalled."
     else
-        print_status "No Helm release '$PROJECT_NAME' found."
+        log_info "No Helm release '${APP_NAME}' found."
     fi
 
-    # Delete Kind cluster
-    if kind get clusters | grep -q "^$PROJECT_NAME$"; then
-        print_status "Deleting Kind cluster '$PROJECT_NAME'..."
-        kind delete cluster --name "$PROJECT_NAME"
-        print_success "Kind cluster '$PROJECT_NAME' deleted."
+    # Delete Kind cluster if it exists
+    if command -v kind &> /dev/null && kind get clusters | grep -q "${APP_NAME}"; then
+        log_info "Deleting Kind cluster '${APP_NAME}'..."
+        kind delete cluster --name "${APP_NAME}" || log_error "Failed to delete Kind cluster."
+        log_success "Kind cluster '${APP_NAME}' deleted."
     else
-        print_status "No Kind cluster '$PROJECT_NAME' found."
+        log_info "No Kind cluster '${APP_NAME}' found."
     fi
+
+    # Explicitly delete the kubectl context for the Kind cluster
+    # This is crucial if Kind cluster creation was interrupted
+    if kubectl config get-contexts | grep -q "kind-${APP_NAME}"; then
+        log_info "Deleting kubectl context 'kind-${APP_NAME}'..."
+        kubectl config delete-context "kind-${APP_NAME}" >/dev/null 2>&1 || log_error "Failed to delete kubectl context 'kind-${APP_NAME}'."
+        log_success "Kubectl context 'kind-${APP_NAME}' deleted."
+    else
+        log_info "No kubectl context 'kind-${APP_NAME}' found."
+    fi
+
+    # Clean up any remaining kubectl resources (e.g., if Helm failed or wasn't used)
+    log_info "Attempting to delete any remaining Kubernetes resources..."
+    kubectl delete deployment "${K8S_FULL_APP_NAME}" --ignore-not-found=true >/dev/null 2>&1 || true
+    kubectl delete service "${K8S_FULL_APP_NAME}" --ignore-not-found=true >/dev/null 2>&1 || true
+    kubectl delete secret "${APP_NAME}-tls-secret" --ignore-not-found=true >/dev/null 2>&1 || true
+    kubectl delete ingress "${K8S_FULL_APP_NAME}-ingress" --ignore-not-found=true >/dev/null 2>&1 || true
+    log_success "Attempted cleanup of remaining Kubernetes resources."
 }
 
-# --- Main Cleanup Logic ---
-main_cleanup() {
-    echo "--- Starting Comprehensive Cleanup ---"
-    
-    cleanup_local_app
-    cleanup_docker
-    cleanup_kubernetes
-
-    print_success "Comprehensive cleanup complete. Environment is ready for a fresh setup."
-    echo "--------------------------------------"
-}
-
-# Execute the main cleanup function
-main_cleanup
+# --- Main Cleanup Execution ---
+echo "--- Starting Comprehensive Cleanup ---"
+cleanup_local_go_processes
+cleanup_docker
+cleanup_kubernetes
+echo "--- Comprehensive cleanup complete. Environment is ready for a fresh setup. ---"

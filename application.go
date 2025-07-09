@@ -1,4 +1,3 @@
-// application.go
 package main
 
 import (
@@ -12,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/bajhalshrey/Key-Server-Application/internal/config"
 	"github.com/bajhalshrey/Key-Server-Application/internal/handler"
@@ -24,45 +23,54 @@ import (
 // Application holds the application's dependencies and configuration.
 type Application struct {
 	config  *config.Config
-	handler *handler.HTTPHandler // Use the specific HTTPHandler struct
+	handler *handler.HTTPHandler
+	router  *http.ServeMux // Application manages its own ServeMux
+	server  *http.Server   // Application manages its own HTTP server instance
 }
 
 // NewApplication creates and initializes a new Application instance.
 // It wires up all the dependencies (metrics, key generator, key service, handler).
-func NewApplication(cfg *config.Config) *Application { // FIX: Only takes config as argument
-	// Initialize Prometheus metrics service first
-	// Use metrics.DefaultRegistry for the main application
-	promMetrics := metrics.NewPrometheusMetricsWithRegistry(metrics.DefaultRegistry, cfg.MaxSize)
+func NewApplication(cfg *config.Config) *Application {
+	// Initialize Prometheus Registry and Metrics
+	appRegistry := prometheus.NewRegistry() // Create a new Registry
+	appMetrics := metrics.NewPrometheusMetricsWithRegistry(appRegistry, cfg.MaxSize)
 
-	// Initialize the cryptographic key generator
 	keyGen := keygenerator.NewCryptoKeyGenerator()
+	keySvc := keyservice.NewKeyService(keyGen, cfg, appMetrics) // Pass appMetrics to service
+	httpHandler := handler.NewHTTPHandler(keySvc, appMetrics)   // Pass appMetrics to handler
 
-	// Initialize the key service with the generator, config, and metrics
-	keySvc := keyservice.NewKeyService(keyGen, cfg, promMetrics)
-
-	// Initialize the HTTP handler with the key service and metrics
-	httpHandler := handler.NewHTTPHandler(keySvc, promMetrics)
+	// Create a new ServeMux for this application instance
+	router := http.NewServeMux()
 
 	return &Application{
 		config:  cfg,
 		handler: httpHandler,
+		router:  router, // Assign the new router
+		server: &http.Server{ // Initialize the server here
+			Addr: fmt.Sprintf(":%s", cfg.Port),
+			// Handler will be set in setupRoutes
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		},
 	}
 }
 
 // setupRoutes configures the HTTP routes for the application.
 func (app *Application) setupRoutes() {
-	// Use the correct method names from handler.HTTPHandler
-	http.HandleFunc("/key/", app.handler.GenerateKey)   // Corrected method name
-	http.HandleFunc("/health", app.handler.HealthCheck) // Corrected method name
-	// Expose Prometheus metrics on /metrics endpoint
-	http.Handle("/metrics", promhttp.Handler()) // Standard Prometheus handler
-	log.Println("Routes configured: /key/{length}, /health, /metrics")
+	// Register handlers on the application's own router
+	app.router.HandleFunc("/key/", app.handler.GenerateKey)
+	app.router.HandleFunc("/health", app.handler.HealthCheck)
+	app.router.HandleFunc("/ready", app.handler.ReadinessCheck)
+	app.router.Handle("/metrics", app.handler.MetricsHandler()) // Use handler's MetricsHandler, which uses its own registry
+	log.Println("Routes configured: /key/{length}, /health, /ready, /metrics")
 }
 
 // Start runs the application, setting up routes and starting the HTTP server.
-// This method was previously named Run() in your main.go.
-func (app *Application) Start() { // FIX: Renamed from Run()
-	app.setupRoutes()
+func (app *Application) Start() {
+	app.setupRoutes() // Configure routes on app.router
+
+	app.server.Handler = app.router // Assign the router to the server
 
 	// Setup TLS configuration
 	tlsConfig := &tls.Config{
@@ -76,27 +84,29 @@ func (app *Application) Start() { // FIX: Renamed from Run()
 			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 		},
 	}
+	app.server.TLSConfig = tlsConfig // Assign TLS config to the server
 
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", app.config.Port), // Use config.Port
-		TLSConfig:    tlsConfig,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
-		// ErrorLog:     log.New(os.Stderr, "HTTP_SERVER_ERROR: ", log.LstdFlags), // Optional: dedicated error log
-	}
-
-	// Start server in a goroutine so it doesn't block the main thread
+	// Start server in a goroutine
 	go func() {
 		log.Printf("Key Server starting on HTTPS port %s...", app.config.Port)
-		if err := srv.ListenAndServeTLS("server.crt", "server.key"); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Could not listen on port %s: %v\n", app.config.Port, err)
+		var serveErr error
+		// Check if cert and key files exist before trying to listen
+		if _, err := os.Stat(app.config.CertFile); os.IsNotExist(err) {
+			log.Fatalf("TLS certificate file not found: %s", app.config.CertFile)
+		}
+		if _, err := os.Stat(app.config.KeyFile); os.IsNotExist(err) {
+			log.Fatalf("TLS key file not found: %s", app.config.KeyFile)
+		}
+		serveErr = app.server.ListenAndServeTLS(app.config.CertFile, app.config.KeyFile) // Use config paths
+
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			log.Fatalf("Server failed to start: %v", serveErr)
 		}
 	}()
 
-	// Graceful shutdown
+	// Handle graceful shutdown
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit // Block until a signal is received
 
 	log.Println("Shutting down server...")
@@ -104,11 +114,9 @@ func (app *Application) Start() { // FIX: Renamed from Run()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := app.server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
 	log.Println("Server exited cleanly.")
 }
-
-// main function removed from here. It is now only in main.go

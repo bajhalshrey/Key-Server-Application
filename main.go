@@ -34,24 +34,29 @@ func main() {
 
 	// Initialize key generator and service
 	keyGen := keygenerator.NewCryptoKeyGenerator()
-	keyService := keyservice.NewKeyService(keyGen, cfg, metricsSvc)
+	// keyService should be of type keyservice.KeyService (interface)
+	keyService := keyservice.NewKeyService(keyGen, cfg, metricsSvc) // This will return the interface type
 
 	// Setup HTTP router and handlers
 	router := mux.NewRouter()
+	// NewHTTPHandler expects keyservice.KeyService (interface) and metrics.MetricsService (interface)
 	httpHandler := handler.NewHTTPHandler(keyService, metricsSvc)
 
+	// Register routes
 	router.HandleFunc("/health", httpHandler.HealthCheck).Methods("GET")
-	log.Printf("Route configured: [GET] /health") // Existing log example
+	log.Printf("Route configured: [GET] /health")
 
 	router.HandleFunc("/key/{length}", httpHandler.GenerateKey).Methods("GET")
+	log.Printf("Route configured: [GET] /key/{length}")
 
 	router.HandleFunc("/ready", httpHandler.ReadinessCheck).Methods("GET")
-	log.Printf("Route configured: [GET] /ready") // ADD THIS NEW LOG MESSAGE
+	log.Printf("Route configured: [GET] /ready")
 
 	// Register Prometheus metrics handler
 	router.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{})).Methods("GET")
+	log.Printf("Route configured: [GET] /metrics")
 
-	// Log routes
+	// Log all configured routes (using Walk is good)
 	router.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
 		path, err := route.GetPathTemplate()
 		if err == nil {
@@ -66,9 +71,11 @@ func main() {
 	})
 
 	// Load SSL certificates
-	cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+	// Ensure server.crt and server.key exist in the same directory as the executable,
+	// or provide full paths.
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
-		log.Fatalf("Error loading SSL certificates: %v", err)
+		log.Fatalf("Error loading SSL certificates from %s and %s: %v", cfg.CertFile, cfg.KeyFile, err)
 	}
 
 	// Configure TLS
@@ -85,9 +92,8 @@ func main() {
 
 	// Create HTTP server
 	server := &http.Server{
-		// CORRECTED: Use cfg.Port and %s format specifier
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
-		Handler:      router,
+		Addr:         fmt.Sprintf(":%s", cfg.Port), // Use cfg.Port
+		Handler:      router,                       // Use the mux router
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -99,10 +105,8 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		// CORRECTED: Use cfg.Port and %s format specifier
 		log.Printf("Key Server starting on HTTPS port %s...", cfg.Port)
-		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			// CORRECTED: Use cfg.Port and %s format specifier
+		if err := server.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Could not listen on port %s: %v", cfg.Port, err)
 		}
 	}()

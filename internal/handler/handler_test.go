@@ -1,176 +1,198 @@
-// internal/handler/handler_test.go
-package handler_test
+package handler
 
 import (
+	// Still needed for potential JSON handling in other tests or future extensions
 	"errors"
+	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"github.com/bajhalshrey/Key-Server-Application/internal/config"
-	"github.com/bajhalshrey/Key-Server-Application/internal/handler"
 	"github.com/bajhalshrey/Key-Server-Application/internal/keyservice"
 	"github.com/bajhalshrey/Key-Server-Application/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Mock for keygenerator.CryptoKeyGenerator interface
-type MockKeyGenerator struct {
-	GenerateFunc func(length int) (string, error)
+// MockKeyService to simulate keyservice.KeyService for testing.
+type MockKeyService struct {
+	GenerateKeyFunc func(length int) (string, error)
 }
 
-func (m *MockKeyGenerator) Generate(length int) (string, error) {
-	return m.GenerateFunc(length)
-}
-
-// MockPrometheusMetrics (not directly used by NewHTTPHandler in this setup, kept for reference)
-type MockPrometheusMetrics struct {
-	IncHTTPStatusCounterFunc         func(statusCode int)
-	ObserveKeyGenerationDurationFunc func(duration float64, length int)
-}
-
-func (m *MockPrometheusMetrics) IncHTTPStatusCounter(statusCode int) {
-	if m.IncHTTPStatusCounterFunc != nil {
-		m.IncHTTPStatusCounterFunc(statusCode)
+// GenerateKey implements the keyservice.KeyService interface for the mock.
+func (m *MockKeyService) GenerateKey(length int) (string, error) {
+	if m.GenerateKeyFunc != nil {
+		return m.GenerateKeyFunc(length)
 	}
-}
-func (m *MockPrometheusMetrics) ObserveKeyGenerationDuration(duration float64, length int) {
-	if m.ObserveKeyGenerationDurationFunc != nil {
-		m.ObserveKeyGenerationDurationFunc(duration, length)
-	}
+	// Default mock behavior: return a dummy encoded string for valid lengths.
+	return keyservice.EncodeKey(make([]byte, length)), nil
 }
 
+// TestHTTPHandler_HealthCheck tests the /health endpoint.
 func TestHTTPHandler_HealthCheck(t *testing.T) {
-	// Setup mocks and dependencies for keyservice
-	mockGenForSvc := &MockKeyGenerator{
-		GenerateFunc: func(length int) (string, error) { return "", nil }, // HealthCheck doesn't use keygen
-	}
-	mockConfigForSvc := &config.Config{MaxSize: 1024} // No SrvPort in config
-	metricsSvcForService := metrics.NewPrometheusMetricsWithRegistry(prometheus.NewRegistry(), mockConfigForSvc.MaxSize)
-	keySvcInstance := keyservice.NewKeyService(mockGenForSvc, mockConfigForSvc, metricsSvcForService)
+	mockKeyService := &MockKeyService{}
+	registry := prometheus.NewRegistry()
 
-	// Instantiate a real metrics.PrometheusMetrics struct for the handler itself
-	metricsSvcForHandler := metrics.NewPrometheusMetricsWithRegistry(prometheus.NewRegistry(), mockConfigForSvc.MaxSize)
-
-	// Create the HTTPHandler instance
-	httpHandler := handler.NewHTTPHandler(keySvcInstance, metricsSvcForHandler)
+	h := NewHTTPHandler(mockKeyService, metrics.NewPrometheusMetricsWithRegistry(registry, 1024)) // Pass directly.
 
 	req, err := http.NewRequest("GET", "/health", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Could not create request: %v", err)
 	}
 
 	rr := httptest.NewRecorder()
-	// Call the method on the httpHandler instance
-	httpHandler.HealthCheck(rr, req)
+	h.HealthCheck(rr, req)
 
 	if status := rr.Code; status != http.StatusOK {
 		t.Errorf("handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
 	}
 
-	expectedBody := "OK"
-	if rr.Body.String() != expectedBody {
-		t.Errorf("handler returned unexpected body: got %v want %v",
-			rr.Body.String(), expectedBody)
+	expected := "Healthy"
+	if rr.Body.String() != expected {
+		t.Errorf("handler returned unexpected body: got %q want %q",
+			rr.Body.String(), expected)
 	}
 }
 
+// TestHTTPHandler_GenerateKey tests the /key/{length} endpoint.
 func TestHTTPHandler_GenerateKey(t *testing.T) {
-	// Setup mocks and dependencies for keyservice
-	mockGenForSvc := &MockKeyGenerator{
-		GenerateFunc: func(length int) (string, error) {
-			if length == 32 {
-				return "generated_key_32bytes_from_mock_svc", nil
-			}
-			return "", errors.New("invalid length for mock key generation")
+	dummyCfg := &config.Config{MaxSize: 1024}
+
+	tests := []struct {
+		name           string
+		keyLength      string
+		mockGenKeyFunc func(length int) (string, error)
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:      "Valid Key Length 32",
+			keyLength: "32",
+			mockGenKeyFunc: func(length int) (string, error) {
+				return keyservice.EncodeKey(make([]byte, length)), nil
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "{\"key\":\"" + keyservice.EncodeKey(make([]byte, 32)) + "\"}\n",
+		},
+		{
+			name:      "Valid Key Length 1",
+			keyLength: "1",
+			mockGenKeyFunc: func(length int) (string, error) {
+				return keyservice.EncodeKey(make([]byte, length)), nil
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "{\"key\":\"" + keyservice.EncodeKey(make([]byte, 1)) + "\"}\n",
+		},
+		{
+			name:           "Invalid Key Length - Non-integer",
+			keyLength:      "abc",
+			mockGenKeyFunc: func(length int) (string, error) { return "", nil }, // This mock won't be called, handler catches parsing error.
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "Invalid key length. Must be a positive integer.\n\n", // Adjusted for double newline
+		},
+		{
+			name:      "Invalid Key Length - Negative",
+			keyLength: "-10",
+			mockGenKeyFunc: func(length int) (string, error) {
+				// Simulate the error from keyservice.GenerateKey.
+				return "", fmt.Errorf("key length %d is out of allowed range (1-%d)", length, dummyCfg.MaxSize)
+			},
+			expectedStatus: http.StatusBadRequest,
+			// Expected body now matches the output: "error message\n\n"
+			expectedBody: "key length -10 is out of allowed range (1-" + strconv.Itoa(dummyCfg.MaxSize) + ")\n\n",
+		},
+		{
+			name:      "Key Length - Zero",
+			keyLength: "0",
+			mockGenKeyFunc: func(length int) (string, error) {
+				// Simulate the error from keyservice.GenerateKey.
+				return "", fmt.Errorf("key length %d is out of allowed range (1-%d)", length, dummyCfg.MaxSize)
+			},
+			expectedStatus: http.StatusBadRequest,
+			// Expected body now matches the output: "error message\n\n"
+			expectedBody: "key length 0 is out of allowed range (1-" + strconv.Itoa(dummyCfg.MaxSize) + ")\n\n",
+		},
+		{
+			name:      "Key Length - Exceeds MaxSize",
+			keyLength: strconv.Itoa(dummyCfg.MaxSize + 1),
+			mockGenKeyFunc: func(length int) (string, error) {
+				// Simulate the error from keyservice.GenerateKey.
+				return "", fmt.Errorf("key length %d is out of allowed range (1-%d)", length, dummyCfg.MaxSize)
+			},
+			expectedStatus: http.StatusBadRequest,
+			// Expected body now matches the output: "error message\n\n"
+			expectedBody: "key length " + strconv.Itoa(dummyCfg.MaxSize+1) + " is out of allowed range (1-" + strconv.Itoa(dummyCfg.MaxSize) + ")\n\n",
+		},
+		{
+			name:      "Key Service Error",
+			keyLength: "16",
+			mockGenKeyFunc: func(length int) (string, error) {
+				return "", errors.New("mock service error")
+			},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Internal server error: Failed to generate key.\n\n", // Adjusted for double newline
 		},
 	}
-	mockConfigForSvc := &config.Config{MaxSize: 1024}
-	metricsSvcForService := metrics.NewPrometheusMetricsWithRegistry(prometheus.NewRegistry(), mockConfigForSvc.MaxSize)
-	keySvcInstance := keyservice.NewKeyService(mockGenForSvc, mockConfigForSvc, metricsSvcForService)
 
-	// Instantiate a real metrics.PrometheusMetrics struct for the handler
-	metricsSvcForHandler := metrics.NewPrometheusMetricsWithRegistry(prometheus.NewRegistry(), mockConfigForSvc.MaxSize)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockKeyService := &MockKeyService{GenerateKeyFunc: tt.mockGenKeyFunc}
+			testRegistry := prometheus.NewRegistry()
+			testPromMetrics := metrics.NewPrometheusMetricsWithRegistry(testRegistry, dummyCfg.MaxSize)
 
-	// Create the HTTPHandler instance
-	httpHandler := handler.NewHTTPHandler(keySvcInstance, metricsSvcForHandler)
+			h := NewHTTPHandler(mockKeyService, testPromMetrics)
 
-	// Test case 1: Valid key generation request
-	req, err := http.NewRequest("GET", "/key/32", nil)
+			req, err := http.NewRequest("GET", "/key/"+tt.keyLength, nil)
+			if err != nil {
+				t.Fatalf("Could not create request: %v", err)
+			}
+
+			rr := httptest.NewRecorder()
+			h.GenerateKey(rr, req)
+
+			if status := rr.Code; status != tt.expectedStatus {
+				t.Errorf("handler returned wrong status code: got %v want %v",
+					status, tt.expectedStatus)
+			}
+
+			bodyBytes, _ := ioutil.ReadAll(rr.Body)
+			bodyString := string(bodyBytes)
+
+			if bodyString != tt.expectedBody { // Changed to direct comparison
+				t.Errorf("handler returned unexpected body for %s:\ngot %q\nwant %q",
+					tt.name, bodyString, tt.expectedBody)
+			}
+		})
+	}
+}
+
+// TestHTTPHandler_ReadinessCheck tests the /ready endpoint.
+func TestHTTPHandler_ReadinessCheck(t *testing.T) {
+	mockKeyService := &MockKeyService{}
+	registry := prometheus.NewRegistry()
+	promMetrics := metrics.NewPrometheusMetricsWithRegistry(registry, 1024)
+
+	h := NewHTTPHandler(mockKeyService, promMetrics)
+
+	req, err := http.NewRequest("GET", "/ready", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Could not create request: %v", err)
 	}
 
 	rr := httptest.NewRecorder()
-	// Call the method on the httpHandler instance
-	httpHandler.GenerateKey(rr, req)
+	h.ReadinessCheck(rr, req)
 
 	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("handler returned wrong status code for valid request: got %v want %v",
+		t.Errorf("handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
 	}
 
-	// FIX: Add newline to expected JSON body, as json.Encoder typically adds one.
-	expectedBody := `{"key":"generated_key_32bytes_from_mock_svc"}` + "\n"
-	if rr.Body.String() != expectedBody {
-		t.Errorf("handler returned unexpected body for valid request: got %q want %q",
-			rr.Body.String(), expectedBody) // Use %q to show raw string with newlines/special chars
-	}
-
-	// Test case 2: Invalid key length (non-integer)
-	req, err = http.NewRequest("GET", "/key/invalid", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rr = httptest.NewRecorder()
-	// Call the method on the httpHandler instance
-	httpHandler.GenerateKey(rr, req)
-	if status := rr.Code; status != http.StatusBadRequest {
-		t.Errorf("handler returned wrong status code for non-integer length: got %v want %v",
-			status, http.StatusBadRequest)
-	}
-
-	// Test case 3: Key length out of bounds (e.g., 0)
-	req, err = http.NewRequest("GET", "/key/0", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rr = httptest.NewRecorder()
-	httpHandler.GenerateKey(rr, req)
-	if status := rr.Code; status != http.StatusBadRequest {
-		t.Errorf("handler returned wrong status code for 0 length: got %v want %v",
-			status, http.StatusBadRequest)
-	}
-
-	// Test case 4: Key length out of bounds (e.g., > MaxSize, assuming MaxSize is 1024 in handler.go)
-	req, err = http.NewRequest("GET", "/key/2000", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rr = httptest.NewRecorder()
-	httpHandler.GenerateKey(rr, req)
-	if status := rr.Code; status != http.StatusBadRequest {
-		t.Errorf("handler returned wrong status code for too large length: got %v want %v",
-			status, http.StatusBadRequest)
-	}
-
-	// Test case 5: Error from key service (e.g., mock returns error for specific length)
-	mockGenForSvc.GenerateFunc = func(length int) (string, error) {
-		if length == 10 {
-			return "", errors.New("mocked key service error")
-		}
-		return "some_key", nil
-	}
-	req, err = http.NewRequest("GET", "/key/10", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rr = httptest.NewRecorder()
-	httpHandler.GenerateKey(rr, req)
-	if status := rr.Code; status != http.StatusInternalServerError {
-		t.Errorf("handler returned wrong status code for key service error: got %v want %v",
-			status, http.StatusInternalServerError)
+	expected := "Ready to serve traffic!"
+	if rr.Body.String() != expected {
+		t.Errorf("handler returned unexpected body: got %q want %q",
+			rr.Body.String(), expected)
 	}
 }

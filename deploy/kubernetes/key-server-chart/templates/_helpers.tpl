@@ -1,29 +1,16 @@
 {{/*
-Common labels
+Expand the name of the chart.
 */}}
-{{- define "key-server-app.labels" -}}
-helm.sh/chart: {{ include "key-server-app.chart" . }}
-{{ include "key-server-app.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Selector labels
-*/}}
-{{- define "key-server-app.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "key-server-app.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
+{{- define "key-server.name" -}}
+{{- default .Chart.Name .Values.nameOverride -}}
+{{- end -}}
 
 {{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "key-server-app.fullname" -}}
+{{- define "key-server.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -39,25 +26,36 @@ If release name contains chart name it will be used as a full name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "key-server-app.chart" -}}
+{{- define "key-server.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
-Create the name for the app.
+Common labels
 */}}
-{{- define "key-server-app.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- define "key-server.labels" -}}
+helm.sh/chart: {{ include "key-server.chart" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/app-version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
+{{/*
+Selector labels
+*/}}
+{{- define "key-server.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "key-server.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
 
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "key-server-app.serviceAccountName" -}}
+{{- define "key-server.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
-    {{ default (include "key-server-app.fullname" .) .Values.serviceAccount.name }}
+    {{- default (include "key-server.fullname" .) .Values.serviceAccount.name -}}
 {{- else -}}
-    {{ default "default" .Values.serviceAccount.name }}
+    {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
