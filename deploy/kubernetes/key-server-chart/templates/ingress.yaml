@@ -1,18 +1,21 @@
 {{- if .Values.ingress.enabled -}}
-apiVersion: networking.k8s.io/v1
+{{- $fullName := include "key-server-app.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- $ingressApiVersion := "extensions/v1beta1" }}
+{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion }}
+{{- $ingressApiVersion = "networking.k8s.io/v1" }}
+{{- end }}
+apiVersion: {{ $ingressApiVersion }}
 kind: Ingress
 metadata:
-  name: {{ include "key-server.fullname" . }}
+  name: {{ $fullName }}-ingress
   labels:
-    {{- include "key-server.labels" . | nindent 4 }}
+    {{- include "key-server-app.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.ingress.className }}
-  ingressClassName: {{ .Values.ingress.className }} # This will now be "nginx"
-  {{- end }}
   {{- if .Values.ingress.tls }}
   tls:
     {{- range .Values.ingress.tls }}
@@ -30,12 +33,14 @@ spec:
         paths:
           {{- range .paths }}
           - path: {{ .path }}
+            {{- if and (eq $ingressApiVersion "networking.k8s.io/v1") .pathType }}
             pathType: {{ .pathType }}
+            {{- end }}
             backend:
               service:
-                name: {{ include "key-server.fullname" $ }}
+                name: {{ $fullName }}
                 port:
-                  number: {{ $.Values.service.targetPort }}
+                  number: {{ $svcPort }}
           {{- end }}
     {{- end }}
 {{- end }}

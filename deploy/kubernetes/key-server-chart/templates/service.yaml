@@ -1,15 +1,20 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "key-server.fullname" . }}
+  name: {{ include "key-server-app.fullname" . }}
   labels:
-    {{- include "key-server.labels" . | nindent 4 }}
+    {{- include "key-server-app.labels" . | nindent 4 }}
+  annotations:
+    # Prometheus annotations for automatic scraping
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8443" # The port where your application exposes metrics
+    prometheus.io/scheme: "https" # Use https if your metrics endpoint is TLS-enabled
 spec:
   type: {{ .Values.service.type }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}
       protocol: TCP
-      name: https
+      name: https # Name the port for clarity and consistency
   selector:
-    {{- include "key-server.selectorLabels" . | nindent 4 }}
+    {{- include "key-server-app.selectorLabels" . | nindent 4 }}

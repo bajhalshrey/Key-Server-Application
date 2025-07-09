@@ -1,14 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "key-server.fullname" . }}
+  name: {{ include "key-server-app.fullname" . }} # Corrected helper name
   labels:
-    {{- include "key-server.labels" . | nindent 4 }}
+    {{- include "key-server-app.labels" . | nindent 4 }} # Corrected helper name
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
-      {{- include "key-server.selectorLabels" . | nindent 6 }}
+      {{- include "key-server-app.selectorLabels" . | nindent 6 }} # Corrected helper name
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -16,13 +18,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "key-server.selectorLabels" . | nindent 8 }}
+        {{- include "key-server-app.selectorLabels" . | nindent 8 }} # Corrected helper name
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "key-server.serviceAccountName" . }}
+      serviceAccountName: {{ include "key-server-app.serviceAccountName" . }} # Corrected helper name
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -40,31 +42,38 @@ spec:
               value: "{{ .Values.service.targetPort }}"
             - name: MAX_KEY_SIZE
               value: "{{ .Values.config.maxKeySize }}"
-            # CORRECTED: Referencing tls.crt and tls.key as stored by Kubernetes in the secret
             - name: TLS_CERT_FILE
-              value: "/etc/key-server/tls/tls.crt" # Path inside container for the certificate
+              value: "/etc/key-server/tls/server.crt"
             - name: TLS_KEY_FILE
-              value: "/etc/key-server/tls/tls.key" # Path inside container for the private key
-          volumeMounts:
-            - name: tls-certs
-              mountPath: "/etc/key-server/tls"
-              readOnly: true
+              value: "/etc/key-server/tls/server.key"
           livenessProbe:
             httpGet:
               path: /health
               port: https
               scheme: HTTPS
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /ready
               port: https
               scheme: HTTPS
             initialDelaySeconds: 5
-            periodSeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 1
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tls-certs
+              mountPath: "/etc/key-server/tls"
+              readOnly: true
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ include "key-server-app.fullname" . }}-tls-secret # Corrected helper name
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -77,7 +86,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      volumes:
-        - name: tls-certs
-          secret:
-            secretName: {{ .Release.Name }}-tls-secret
