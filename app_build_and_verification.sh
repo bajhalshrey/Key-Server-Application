@@ -189,6 +189,29 @@ data:
 EOF
 log_success "Grafana Dashboard Provisioning Configuration ConfigMap created."
 
+# Create ConfigMap for Grafana Prometheus Data Source Provisioning
+log_step "Creating Grafana Prometheus Data Source Provisioning ConfigMap..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-prometheus-datasource
+  namespace: ${GRAFANA_NAMESPACE}
+data:
+  prometheus-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-stack-kube-prom-prometheus.prometheus-operator:9090
+        access: proxy
+        isDefault: true
+        version: 1
+        editable: false
+EOF
+log_success "Grafana Prometheus Data Source Provisioning ConfigMap created."
+
+
 log_info "Adding a short delay for ConfigMap propagation..."
 sleep 5
 
@@ -222,6 +245,12 @@ helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-sta
     --set grafana.extraVolumeMounts[2].name=grafana-provisioning-config-volume \
     --set grafana.extraVolumeMounts[2].mountPath=/etc/grafana/provisioning/dashboards/custom-dashboards.yaml \
     --set grafana.extraVolumeMounts[2].subPath=custom-dashboards.yaml \
+    \
+    --set grafana.extraVolumes[3].name=grafana-datasource-volume \
+    --set grafana.extraVolumes[3].configMap.name=grafana-prometheus-datasource \
+    --set grafana.extraVolumeMounts[3].name=grafana-datasource-volume \
+    --set grafana.extraVolumeMounts[3].mountPath=/etc/grafana/provisioning/datasources/prometheus-datasource.yaml \
+    --set grafana.extraVolumeMounts[3].subPath=prometheus-datasource.yaml \
     \
     --set-json prometheus.prometheusSpec.serviceMonitorSelector='{}' \
     --set-json prometheus.prometheusSpec.serviceMonitorNamespaceSelector='{}' \
