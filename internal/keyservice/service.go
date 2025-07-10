@@ -12,12 +12,12 @@ import (
 )
 
 // KeyService defines the interface for key-related operations.
-type KeyService interface { // <--- THIS IS NOW AN INTERFACE
+type KeyService interface {
 	GenerateKey(length int) (string, error)
 }
 
 // concreteKeyService implements the KeyService interface.
-type concreteKeyService struct { // <--- RENAMED CONCRETE STRUCT
+type concreteKeyService struct {
 	keyGenerator keygenerator.CryptoKeyGenerator
 	config       *config.Config
 	metrics      *metrics.PrometheusMetrics // Use the concrete struct pointer
@@ -29,8 +29,8 @@ func NewKeyService(
 	kg keygenerator.CryptoKeyGenerator,
 	cfg *config.Config,
 	m *metrics.PrometheusMetrics,
-) KeyService { // <--- RETURNS THE INTERFACE TYPE
-	return &concreteKeyService{ // <--- RETURNS INSTANCE OF CONCRETE STRUCT
+) KeyService {
+	return &concreteKeyService{
 		keyGenerator: kg,
 		config:       cfg,
 		metrics:      m,
@@ -39,11 +39,14 @@ func NewKeyService(
 
 // GenerateKey generates a new key of the specified length.
 // It returns the Base64 URL-encoded string of the key.
-func (s *concreteKeyService) GenerateKey(length int) (string, error) { // <--- METHOD ON CONCRETE STRUCT
+func (s *concreteKeyService) GenerateKey(length int) (string, error) {
 	s.metrics.IncrementKeyGenerationRequests()
 
 	if length <= 0 || length > s.config.MaxSize {
 		s.metrics.IncrementInvalidKeyLengthErrors()
+		// It's generally better to define specific error types for known error conditions
+		// rather than relying on string comparison in the caller (handler.go).
+		// For now, given the current handler, this is acceptable, but something to consider.
 		return "", fmt.Errorf("key length %d is out of allowed range (1-%d)", length, s.config.MaxSize)
 	}
 
