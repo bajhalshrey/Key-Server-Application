@@ -1,500 +1,354 @@
 #!/bin/bash
 
-# app_build_and_verification.sh
-# This script automates the end-to-end build, deployment, and verification
-# process for the Key Server application, including monitoring setup.
+# Define constants
+APP_NAME="key-server"
+GRAFANA_NAMESPACE="prometheus-operator"
 
-set -euo pipefail
-
-# --- Configuration ---
-APP_NAME="key-server" # This is the Helm Release Name and Docker Image Name
-TEST_APP_NAME="key-server-test" # Name for the test container/service
-DOCKERFILE="./Dockerfile"
-HELM_CHART_PATH="./deploy/kubernetes/key-server-chart"
-LOCAL_K8S_PORT=8443 # Local port for kubectl port-forward
-LOCAL_APP_BINARY="./${APP_NAME}" # Define the local binary path
-
-# Derived Kubernetes full application name (release-name-name-chart-name)
-# Based on Chart.yaml name: key-server-app and Helm release name: key-server
-K8S_FULL_APP_NAME="${APP_NAME}-key-server-app"
-
-# Monitoring Stack Configuration
-PROMETHEUS_HELM_REPO_NAME="prometheus-community"
-PROMETHEUS_HELM_REPO_URL="https://prometheus-community.github.io/helm-charts"
-PROMETHEUS_STACK_RELEASE_NAME="prometheus-stack"
-PROMETHEUS_NAMESPACE="prometheus-operator"
-GRAFANA_SECRET_NAME="grafana-admin-secret" # Name of the Kubernetes Secret for Grafana admin password
-GRAFANA_SECRET_KEY="admin-password"        # Key within the secret that holds the password
-GRAFANA_ADMIN_USERNAME="admin"             # Default Grafana admin username
-
-# --- Helper Functions ---
-log_step() {
-    echo -e "\n[STEP] $1"
-}
-
+# Function for logging information messages
 log_info() {
     echo -e "[INFO] $1"
 }
 
+# Function for logging success messages
 log_success() {
     echo -e "[SUCCESS] $1"
 }
 
+# Function for logging error messages and exiting
 log_error() {
     echo -e "[ERROR] $1"
     exit 1
 }
 
-# Function to securely prompt for Grafana admin password
+# Function for logging step messages
+log_step() {
+    echo -e "\n[STEP] $1\n"
+}
+
+# Function to get a secure password for Grafana admin
 get_grafana_password() {
-    local password=""
-    while true; do
-        read -s -p "Enter a secure password for Grafana admin user: " password
-        echo
-        if [ -z "$password" ]; then
-            log_error "Grafana password cannot be empty."
-        else
-            echo "$password"
-            break
+    local password
+    # Read password securely without echoing it
+    read -s -p "Enter a secure password for Grafana admin user: " password
+    echo # New line after password prompt
+    # Ensure password is not empty
+    if [ -z "$password" ]; then
+        log_error "Grafana admin password cannot be empty. Exiting."
+        exit 1
+    fi
+    echo -n "$password" # Print the password to stdout WITHOUT a trailing newline
+}
+
+# Function to test application API endpoints
+# Arguments:
+#   $1: Base URL (e.g., https://localhost:8443)
+#   $2: Context (e.g., "Local Go App", "Docker Container", "Kubernetes Deployment")
+test_api_endpoints() {
+    local base_url="$1"
+    local context="$2"
+    log_info "Testing API endpoints for ${context} at ${base_url}..."
+
+    # Test /health endpoint
+    log_info "  Testing /health endpoint..."
+    if curl -k --fail --silent "${base_url}/health" | grep -q "Healthy"; then
+        log_success "  /health endpoint is Healthy."
+    else
+        log_error "  /health endpoint FAILED for ${context}."
+    fi
+
+    # Test /ready endpoint
+    log_info "  Testing /ready endpoint..."
+    if curl -k --fail --silent "${base_url}/ready" | grep -q "Ready"; then
+        log_success "  /ready endpoint is Ready."
+    else
+        log_error "  /ready endpoint FAILED for ${context}."
+    fi
+
+    # Test /key/32 endpoint
+    log_info "  Testing /key/32 endpoint..."
+    local key_response
+    key_response=$(curl -k --fail --silent "${base_url}/key/32")
+    if echo "${key_response}" | jq -e '.key' > /dev/null; then
+        log_success "  /key/32 endpoint returned a valid key."
+    else
+        log_error "  /key/32 endpoint FAILED to return a valid key for ${context}. Response: ${key_response}"
+    fi
+
+    # Test /metrics endpoint - CHECKING FOR 'http_requests_total'
+    log_info "  Testing /metrics endpoint..."
+    if curl -k --fail --silent "${base_url}/metrics" | grep -q "http_requests_total"; then
+        log_success "  /metrics endpoint is accessible and contains expected metrics ('http_requests_total')."
+    else
+        log_error "  /metrics endpoint FAILED for ${context}. Expected 'http_requests_total' metric not found."
+    fi
+
+    log_success "All API tests PASSED for ${context}."
+}
+
+# Function to find a pod name robustly
+# Arguments:
+#   $1: Namespace
+#   $2: Grep pattern for pod name
+#   $3: Description for logging
+find_pod_name_robustly() {
+    local namespace="$1"
+    local grep_pattern="$2"
+    local description="$3"
+    local pod_name=""
+    local max_retries=24 # 24 * 5 seconds = 120 seconds (2 minutes)
+    local retry_count=0
+
+    log_info "  Searching for ${description} pod in namespace '${namespace}' with pattern '${grep_pattern}'..." >&2 # Redirect to stderr
+    while [ -z "${pod_name}" ] && [ "${retry_count}" -lt "${max_retries}" ]; do
+        # kubectl output is piped, so stderr is preserved for error messages, stdout is captured
+        pod_name=$(kubectl get pods -n "${namespace}" -o name 2>/dev/null | grep "${grep_pattern}" | head -n 1 | sed 's/^pod\///')
+        if [ -z "${pod_name}" ]; then
+            log_info "    ${description} pod not found yet. Retrying in 5 seconds... (Attempt $((retry_count + 1))/${max_retries})" >&2 # Redirect to stderr
+            sleep 5
+            retry_count=$((retry_count + 1))
         fi
     done
-}
 
-# Function to clean up local Go processes
-cleanup_local_go_processes() {
-    log_info "Cleaning up local Go application processes..."
-    # Find and kill processes named APP_NAME (e.g., key-server)
-    if pgrep -f "${APP_NAME}" > /dev/null; then
-        pkill -f "${APP_NAME}"
-        log_info "Killed existing '${APP_NAME}' processes."
-    else
-        log_info "No local '${APP_NAME}' processes found running."
+    if [ -z "${pod_name}" ]; then
+        log_error "${description} pod not found after multiple retries. Check 'kubectl get pods -n ${namespace}'."
     fi
-}
-
-# Function to clean up Docker containers and images
-cleanup_docker() {
-    log_info "Stopping and removing Docker containers: ${APP_NAME}, ${TEST_APP_NAME}..."
-    docker stop "${APP_NAME}" "${TEST_APP_NAME}" >/dev/null 2>&1 || true
-    docker rm "${APP_NAME}" "${TEST_APP_NAME}" >/dev/null 2>&1 || true
-    log_success "Docker containers stopped and removed."
-
-    log_info "Removing Docker images for '${APP_NAME}'..."
-    # Remove images only if they exist to avoid errors
-    if docker images -q "${APP_NAME}" > /dev/null; then
-        docker rmi "${APP_NAME}" >/dev/null 2>&1 || true
-        log_success "Docker images for '${APP_NAME}' removed."
-    else
-        log_info "No Docker images for '${APP_NAME}' found."
-    fi
-}
-
-# Function to clean up Kubernetes resources
-cleanup_kubernetes() {
-    log_info "Cleaning up Kubernetes deployments..."
-    # Kill any kubectl port-forward sessions
-    if pgrep -f "kubectl port-forward" > /dev/null; then
-        pkill -f "kubectl port-forward"
-        log_info "Killed existing kubectl port-forward sessions."
-    else
-        log_info "No kubectl port-forward sessions found for '${APP_NAME}'."
-    fi
-
-    # Check and delete Helm release if it exists
-    if helm status "${APP_NAME}" &> /dev/null; then
-        log_info "Uninstalling Helm release '${APP_NAME}'..."
-        helm uninstall "${APP_NAME}" || log_error "Failed to uninstall Helm release."
-        log_success "Helm release '${APP_NAME}' uninstalled."
-    else
-        log_info "No Helm release '${APP_NAME}' found."
-    fi
-
-    # Uninstall Prometheus stack if it exists
-    if helm status "${PROMETHEUS_STACK_RELEASE_NAME}" --namespace "${PROMETHEUS_NAMESPACE}" &> /dev/null; then
-        log_info "Uninstalling Helm release '${PROMETHEUS_STACK_RELEASE_NAME}' in namespace '${PROMETHEUS_NAMESPACE}'..."
-        helm uninstall "${PROMETHEUS_STACK_RELEASE_NAME}" --namespace "${PROMETHEUS_NAMESPACE}" || log_error "Failed to uninstall Prometheus stack Helm release."
-        log_success "Prometheus stack Helm release uninstalled."
-    else
-        log_info "No Prometheus stack Helm release '${PROMETHEUS_STACK_RELEASE_NAME}' found."
-    fi
-
-    # Delete Grafana admin secret if it exists
-    if kubectl get secret "${GRAFANA_SECRET_NAME}" -n "${PROMETHEUS_NAMESPACE}" &> /dev/null; then
-        log_info "Deleting Grafana admin secret '${GRAFANA_SECRET_NAME}' in namespace '${PROMETHEUS_NAMESPACE}'..."
-        kubectl delete secret "${GRAFANA_SECRET_NAME}" -n "${PROMETHEUS_NAMESPACE}" || log_error "Failed to delete Grafana admin secret."
-        log_success "Grafana admin secret deleted."
-    else
-        log_info "Grafana admin secret '${GRAFANA_SECRET_NAME}' not found."
-    fi
-
-    # Delete the prometheus-operator namespace if it exists and is empty
-    if kubectl get ns "${PROMETHEUS_NAMESPACE}" &> /dev/null; then
-        if [ -z "$(kubectl get pods -n "${PROMETHEUS_NAMESPACE}" -o name 2>/dev/null)" ]; then
-            log_info "Namespace '${PROMETHEUS_NAMESPACE}' is empty, deleting..."
-            kubectl delete ns "${PROMETHEUS_NAMESPACE}" --timeout=120s --wait=true >/dev/null 2>&1 || log_error "Failed to delete namespace '${PROMETHEUS_NAMESPACE}'."
-            log_success "Namespace '${PROMETHEUS_NAMESPACE}' deleted."
-        else
-            log_info "Namespace '${PROMETHEUS_NAMESPACE}' is not empty, skipping deletion."
-        fi
-    fi
-
-    # Delete Kind cluster if it exists
-    if command -v kind &> /dev/null && kind get clusters | grep -q "${APP_NAME}"; then
-        log_info "Deleting Kind cluster '${APP_NAME}'..."
-        kind delete cluster --name "${APP_NAME}" || log_error "Failed to delete Kind cluster."
-        log_success "Kind cluster '${APP_NAME}' deleted."
-    else
-        log_info "No Kind cluster '${APP_NAME}' found."
-    fi
-
-    # Explicitly delete the kubectl context for the Kind cluster
-    # This is crucial if Kind cluster creation was interrupted
-    if kubectl config get-contexts | grep -q "kind-${APP_NAME}"; then
-        log_info "Deleting kubectl context 'kind-${APP_NAME}'..."
-        kubectl config delete-context "kind-${APP_NAME}" >/dev/null 2>&1 || log_error "Failed to delete kubectl context 'kind-${APP_NAME}'."
-        log_success "Kubectl context 'kind-${APP_NAME}' deleted."
-    else
-        log_info "No kubectl context 'kind-${APP_NAME}' found."
-    fi
-
-    # Clean up any remaining kubectl resources (e.g., if Helm failed or wasn't used)
-    # Using K8S_FULL_APP_NAME for resources deployed by Helm
-    log_info "Attempting to delete any remaining Kubernetes resources..."
-    kubectl delete deployment "${K8S_FULL_APP_NAME}" --ignore-not-found=true >/dev/null 2>&1 || true
-    kubectl delete service "${K8S_FULL_APP_NAME}" --ignore-not-found=true >/dev/null 2>&1 || true
-    # Corrected: Use K8S_FULL_APP_NAME for TLS secret deletion
-    kubectl delete secret "${K8S_FULL_APP_NAME}-tls-secret" --ignore-not-found=true >/dev/null 2>&1 || true
-    kubectl delete ingress "${K8S_FULL_APP_NAME}-ingress" --ignore-not-found=true >/dev/null 2>&1 || true
-    log_success "Attempted cleanup of remaining Kubernetes resources."
+    echo "${pod_name}" # Return the found pod name on stdout
 }
 
 
-# --- Main Cleanup Function ---
-comprehensive_cleanup() {
-    echo "--- Starting Comprehensive Cleanup ---"
-    cleanup_local_go_processes
-    cleanup_docker
-    cleanup_kubernetes
-    echo "--- Comprehensive cleanup complete. Environment is ready for a fresh setup. ---"
-}
+# --- Main Script Execution ---
 
-# --- Script Start ---
-echo "════════════════════════════════════════════════════════"
-echo " Key Server: End-to-End Build, Deploy, and Verify"
-echo "════════════════════════════════════════════════════════"
+log_step "Starting Kubernetes environment setup and application deployment..."
 
-# Determine OS for platform-specific commands
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-log_info "Detected OS: ${OS}"
+# 1. Create Kind Cluster
+log_info "Creating Kind cluster named '${APP_NAME}'..."
+kind create cluster --name "${APP_NAME}" || log_error "Failed to create Kind cluster."
+log_success "Kind cluster '${APP_NAME}' created."
 
-# --- Step 1: Build and Test Locally ---
-log_step "Building and testing the project locally..."
-
-log_info "Tidying Go modules..."
-go mod tidy || log_error "Go mod tidy failed."
-
-log_info "Downloading Go modules..."
-go mod download || log_error "Go mod download failed."
-
-log_info "Building application executable..."
-# Ensure the binary is named APP_NAME (key-server) in the current directory
-go build -o "${APP_NAME}" . || log_error "Go build failed."
-log_success "Application built: ${LOCAL_APP_BINARY}"
-
-log_info "Running local unit tests..."
-go test -v ./... || log_error "Local unit tests failed."
-log_success "Local unit tests completed."
-
-# --- Step 2: Verifying local application functionality (brief run with HTTPS)...
-log_step "Verifying local application functionality (brief run with HTTPS)..."
-
-# Generate self-signed certificates for local testing if they don't exist
-if [ ! -f "./certs/server.crt" ] || [ ! -f "./certs/server.key" ]; then
-    log_info "Generating self-signed TLS certificates for local testing..."
-    mkdir -p certs
-    openssl req -x509 -newkey rsa:4096 -nodes -keyout certs/server.key -out certs/server.crt -days 365 -subj "/CN=localhost" 2>/dev/null || log_error "Failed to generate self-signed certificates."
-    log_success "Self-signed certificates generated in ./certs."
-fi
-
-# Run the application in the background
-# Corrected: Execute the compiled binary, not the directory
-PORT=8443 MAX_KEY_SIZE=64 TLS_CERT_FILE=./certs/server.crt TLS_KEY_FILE=./certs/server.key "${LOCAL_APP_BINARY}" &
-APP_PID=$!
-log_info "Local application started with PID: ${APP_PID}"
-
-# Give the server a moment to start up
-sleep 3
-
-# Verify health endpoint
-log_info "Checking local health endpoint..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:8443/health")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Local health endpoint: OK"
-else
-    log_error "Local health endpoint: FAILED (Status: ${HTTP_STATUS})"
-fi
-
-# Verify readiness endpoint
-log_info "Checking local readiness endpoint..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:8443/ready")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Local readiness endpoint: OK"
-else
-    log_error "Local readiness endpoint: FAILED (Status: ${HTTP_STATUS})"
-fi
-
-# Verify key generation endpoint
-log_info "Checking local key generation endpoint..."
-KEY_RESPONSE=$(curl -k -s "https://localhost:8443/key/32")
-# A 32-byte key, base64 encoded, is 44 characters long. wc -c includes the newline, so 45.
-if echo "${KEY_RESPONSE}" | grep -q '"key":' && [ "$(echo "${KEY_RESPONSE}" | jq -r '.key' | wc -c)" -eq 45 ]; then
-    log_success "Local key generation endpoint: OK (Key: $(echo "${KEY_RESPONSE}" | jq -r '.key'))"
-else
-    log_error "Local key generation endpoint: FAILED (Response: ${KEY_RESPONSE})"
-fi
-
-# Verify metrics endpoint
-log_info "Checking local metrics endpoint..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:8443/metrics")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Local metrics endpoint: OK"
-else
-    log_error "Local metrics endpoint: FAILED (Status: ${HTTP_STATUS})"
-fi
-
-# Kill the background application process
-log_info "Stopping local application..."
-kill "${APP_PID}" || log_error "Failed to stop local application."
-wait "${APP_PID}" 2>/dev/null || true # Wait for process to terminate
-log_success "Local application stopped."
-
-# --- Step 3: Build Docker Image ---
-log_step "Building Docker image..."
-docker build -t "${APP_NAME}" -f "${DOCKERFILE}" . || log_error "Docker image build failed."
-log_success "Docker image built: ${APP_NAME}"
-
-# --- Step 4: Run Docker Container (brief test) ---
-log_step "Running Docker container for brief test..."
-docker run -d --name "${TEST_APP_NAME}" -p 8443:8443 \
-    -v "$(pwd)/certs:/etc/key-server/tls" \
-    -e PORT=8443 \
-    -e TLS_CERT_FILE=/etc/key-server/tls/server.crt \
-    -e TLS_KEY_FILE=/etc/key-server/tls/server.key \
-    "${APP_NAME}" || log_error "Docker container failed to run."
-log_info "Docker container '${TEST_APP_NAME}' started."
-
-# Give the container a moment to start up
-sleep 5
-
-# Verify health endpoint in Docker
-log_info "Checking Docker container health endpoint..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:8443/health")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Docker container health endpoint: OK"
-else
-    log_error "Docker container health endpoint: FAILED (Status: ${HTTP_STATUS})"
-fi
-
-# Verify key generation endpoint in Docker
-log_info "Checking Docker container key generation endpoint..."
-KEY_RESPONSE=$(curl -k -s "https://localhost:8443/key/32")
-# A 32-byte key, base64 encoded, is 44 characters long. wc -c includes the newline, so 45.
-if echo "${KEY_RESPONSE}" | grep -q '"key":' && [ "$(echo "${KEY_RESPONSE}" | jq -r '.key' | wc -c)" -eq 45 ]; then
-    log_success "Docker container key generation endpoint: OK (Key: $(echo "${KEY_RESPONSE}" | jq -r '.key'))"
-else
-    log_error "Docker container key generation endpoint: FAILED (Response: ${KEY_RESPONSE})"
-fi
-
-# Clean up Docker test container
-log_info "Stopping and removing Docker test container..."
-docker stop "${TEST_APP_NAME}" >/dev/null || true
-docker rm "${TEST_APP_NAME}" >/dev/null || true
-log_success "Docker test container stopped and removed."
-
-# --- Step 5: Deploy Monitoring Stack (Prometheus, Grafana, Alertmanager) ---
-log_step "Deploying Monitoring Stack (Prometheus, Grafana, Alertmanager)..."
-
-# Ensure Kind cluster exists and context is set before any kubectl command related to the cluster
-if ! command -v kind &> /dev/null; then
-    log_error "Kind is not installed. Please install Kind to proceed with Kubernetes deployment."
-    exit 1
-fi
-
-if ! kind get clusters | grep -q "${APP_NAME}"; then
-    log_info "Kind cluster '${APP_NAME}' not found. Creating a new cluster..."
-    kind create cluster --name "${APP_NAME}" || log_error "Failed to create Kind cluster."
-    log_success "Kind cluster '${APP_NAME}' created."
-else
-    log_info "Kind cluster '${APP_NAME}' already exists."
-fi
-
-# Ensure kubectl context is explicitly set to the Kind cluster
+# 2. Set Kubectl Context
 log_info "Setting kubectl context to 'kind-${APP_NAME}'..."
-kubectl config use-context "kind-${APP_NAME}" || log_error "Failed to set kubectl context to 'kind-${APP_NAME}'."
+kubectl config use-context "kind-${APP_NAME}" || log_error "Failed to set kubectl context."
 log_success "kubectl context set to 'kind-${APP_NAME}'."
 
-# Diagnostic outputs for kubectl connection
 log_info "Current kubectl context: $(kubectl config current-context)"
 log_info "Attempting to get Kubernetes cluster info (this should NOT show localhost:8080 if context is correct):"
-kubectl cluster-info || log_error "Failed to get Kubernetes cluster info. This likely indicates a fundamental kubectl connectivity issue."
+kubectl cluster-info || log_error "Failed to get cluster info."
 
+# 3. Add Helm Repositories
 log_info "Adding Prometheus community Helm repository..."
-helm repo add "${PROMETHEUS_HELM_REPO_NAME}" "${PROMETHEUS_HELM_REPO_URL}" || log_error "Failed to add Prometheus Helm repo."
-helm repo update || log_error "Failed to update Helm repos."
-log_success "Prometheus Helm repository added and updated."
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || log_error "Failed to add Prometheus Helm repo."
+helm repo update || log_error "Failed to update Helm repositories."
+log_success "Helm repositories added and updated."
 
-# Prompt for Grafana admin password
+# 4. Generate Grafana Admin Password and Create Secret
 GRAFANA_ADMIN_PASSWORD=$(get_grafana_password)
 log_info "Creating Kubernetes Secret for Grafana admin password..."
-# Ensure namespace exists before creating secret, explicitly disabling validation
-kubectl create namespace "${PROMETHEUS_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - --validate=false || log_error "Failed to ensure namespace '${PROMETHEUS_NAMESPACE}' exists."
-# Create secret, explicitly disabling validation to avoid local OpenAPI issues
-# Added --from-literal="admin-user=${GRAFANA_ADMIN_USERNAME}"
-kubectl create secret generic "${GRAFANA_SECRET_NAME}" \
-  --from-literal="${GRAFANA_SECRET_KEY}=${GRAFANA_ADMIN_PASSWORD}" \
-  --from-literal="admin-user=${GRAFANA_ADMIN_USERNAME}" \
-  --namespace "${PROMETHEUS_NAMESPACE}" \
-  --dry-run=client -o yaml | kubectl apply -f - --validate=false || log_error "Failed to create Grafana admin secret."
-log_success "Grafana admin secret '${GRAFANA_SECRET_NAME}' created."
+kubectl create namespace "${GRAFANA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - --validate=false || log_error "Failed to create ${GRAFANA_NAMESPACE} namespace."
+kubectl create secret generic grafana-admin-secret \
+    --from-literal=admin-user=admin \
+    --from-literal=admin-password="${GRAFANA_ADMIN_PASSWORD}" \
+    --namespace "${GRAFANA_NAMESPACE}" \
+    --dry-run=client -o yaml | kubectl apply -f - --validate=false || log_error "Failed to create Grafana admin secret."
+log_success "Grafana admin secret 'grafana-admin-secret' created."
 
-log_info "Installing kube-prometheus-stack Helm chart..."
-helm upgrade --install "${PROMETHEUS_STACK_RELEASE_NAME}" "${PROMETHEUS_HELM_REPO_NAME}/kube-prometheus-stack" \
-  --namespace "${PROMETHEUS_NAMESPACE}" \
-  --set grafana.admin.existingSecret="${GRAFANA_SECRET_NAME}" \
-  --set grafana.admin.secretKey="${GRAFANA_SECRET_KEY}" \
-  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesPods=false \
-  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesPods=false \
-  --set grafana.service.type=NodePort \
-  --wait --timeout 10m || log_error "Failed to install kube-prometheus-stack."
-log_success "Prometheus stack deployed successfully."
+# 5. Create Grafana Dashboard JSON ConfigMaps
+log_step "Creating Grafana Dashboard JSON ConfigMaps..."
+kubectl create configmap key-server-http-overview-dashboard \
+    --from-file=http-overview.json \
+    --namespace "${GRAFANA_NAMESPACE}" \
+    --dry-run=client -o yaml | kubectl apply -f - || log_error "Failed to create HTTP overview dashboard ConfigMap."
+log_success "HTTP overview dashboard ConfigMap created."
 
-log_info "Waiting for monitoring stack pods to be ready..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance="${PROMETHEUS_STACK_RELEASE_NAME}" -n "${PROMETHEUS_NAMESPACE}" --timeout=300s || log_error "Monitoring stack pods not ready."
-log_success "Monitoring stack pods are ready."
+kubectl create configmap key-server-key-generation-dashboard \
+    --from-file=key-generation.json \
+    --namespace "${GRAFANA_NAMESPACE}" \
+    --dry-run=client -o yaml | kubectl apply -f - || log_error "Failed to create Key Generation dashboard ConfigMap."
+log_success "Key Generation dashboard ConfigMap created."
 
+# Create ConfigMap for Grafana Dashboard Provisioning Configuration
+log_step "Creating Grafana Dashboard Provisioning Configuration ConfigMap..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-custom-dashboards-provisioning
+  namespace: ${GRAFANA_NAMESPACE}
+data:
+  custom-dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'Key Server Dashboards'
+        orgId: 1
+        folder: 'Key Server'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/key-server
+          foldersFromFilesStructure: false
+EOF
+log_success "Grafana Dashboard Provisioning Configuration ConfigMap created."
 
-# --- Step 6: Deploy Key Server to Kubernetes (using Helm) ---
-log_step "Deploying Key Server to Kubernetes using Helm..."
-
-# Load Docker image into Kind cluster
-log_info "Loading Docker image '${APP_NAME}' into Kind cluster..."
-kind load docker-image "${APP_NAME}" --name "${APP_NAME}" || log_error "Failed to load Docker image into Kind."
-log_success "Docker image loaded into Kind cluster."
-
-# Create TLS secret in Kubernetes
-log_info "Creating Kubernetes TLS secret from generated certificates..."
-# Corrected: Use K8S_FULL_APP_NAME for TLS secret creation
-kubectl create secret tls "${K8S_FULL_APP_NAME}-tls-secret" \
-  --cert="./certs/server.crt" \
-  --key="./certs/server.key" \
-  --dry-run=client -o yaml | kubectl apply -f - || log_error "Failed to create TLS secret."
-log_success "Kubernetes TLS secret created."
-
-
-# Deploy using Helm
-log_info "Installing/Upgrading Helm chart for '${APP_NAME}'..."
-helm upgrade --install "${APP_NAME}" "${HELM_CHART_PATH}" \
-  --set image.repository="${APP_NAME}" \
-  --set image.tag="latest" \
-  --set service.type="NodePort" \
-  --set ingress.enabled=true \
-  --set ingress.tls[0].secretName="${APP_NAME}-tls-secret" \
-  --set config.maxKeySize=64 \
-  --set service.port=8443 \
-  --set service.targetPort=8443 \
-  --wait --timeout 10m || log_error "Helm deployment failed." # Added --timeout 10m
-log_success "Helm deployment completed."
-
-# --- Step 7: Verify Key Server Kubernetes Deployment (using kubectl port-forward) ---
-log_step "Verifying Key Server Kubernetes deployment (using kubectl port-forward)..."
-
-log_info "Waiting for deployment to be ready..."
-# Use K8S_FULL_APP_NAME for the deployment name
-kubectl wait --for=condition=available deployment/"${K8S_FULL_APP_NAME}" --timeout=300s || log_error "Deployment not ready."
-log_success "Deployment is ready."
-
-log_info "Establishing kubectl port-forward from localhost:${LOCAL_K8S_PORT} to service ${K8S_FULL_APP_NAME}:8443..."
-# Start port-forward in background, redirecting stdout/stderr to /dev/null
-# Use the service name for port-forwarding to ensure it targets healthy pods
-kubectl port-forward svc/"${K8S_FULL_APP_NAME}" "${LOCAL_K8S_PORT}":8443 > /dev/null 2>&1 &
-PORT_FORWARD_PID=$!
-log_info "kubectl port-forward started with PID: ${PORT_FORWARD_PID}"
-
-# Give port-forward a moment to establish
+log_info "Adding a short delay for ConfigMap propagation..."
 sleep 5
 
-# Verify health endpoint via port-forward
-log_info "Checking Kubernetes health endpoint (via localhost:${LOCAL_K8S_PORT})..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:${LOCAL_K8S_PORT}/health")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Kubernetes health endpoint (Port-Forward): OK"
-else
-    log_error "Kubernetes health endpoint (Port-Forward): FAILED (Status: ${HTTP_STATUS})"
+# 6. Deploy Prometheus Stack with Grafana
+log_info "Installing kube-prometheus-stack Helm chart (configured for direct dashboard provisioning and cross-namespace ServiceMonitor discovery)..."
+helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack \
+    --namespace "${GRAFANA_NAMESPACE}" \
+    --set grafana.admin.existingSecret=grafana-admin-secret \
+    --set grafana.admin.secretKey=admin-password \
+    --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesPods=false \
+    --set prometheus.prometheusSpec.podMonitorSelectorNilUsesPods=false \
+    --set grafana.service.type=NodePort \
+    --set grafana.sidecar.dashboards.enabled=false \
+    --set grafana.sidecar.datasources.enabled=false \
+    --set grafana.sidecar.notifiers.enabled=false \
+    --set grafana.sidecar.plugins.enabled=false \
+    --set grafana.initChownData.enabled=false \
+    --set grafana.extraVolumes[0].name=key-server-dashboards-volume \
+    --set grafana.extraVolumes[0].configMap.name=key-server-http-overview-dashboard \
+    --set grafana.extraVolumes[1].name=key-server-dashboards-volume-2 \
+    --set grafana.extraVolumes[1].configMap.name=key-server-key-generation-dashboard \
+    --set grafana.extraVolumeMounts[0].name=key-server-dashboards-volume \
+    --set grafana.extraVolumeMounts[0].mountPath=/var/lib/grafana/dashboards/key-server/http-overview.json \
+    --set grafana.extraVolumeMounts[0].subPath=http-overview.json \
+    --set grafana.extraVolumeMounts[1].name=key-server-dashboards-volume-2 \
+    --set grafana.extraVolumeMounts[1].mountPath=/var/lib/grafana/dashboards/key-server/key-generation.json \
+    --set grafana.extraVolumeMounts[1].subPath=key-generation.json \
+    \
+    --set grafana.extraVolumes[2].name=grafana-provisioning-config-volume \
+    --set grafana.extraVolumes[2].configMap.name=grafana-custom-dashboards-provisioning \
+    --set grafana.extraVolumeMounts[2].name=grafana-provisioning-config-volume \
+    --set grafana.extraVolumeMounts[2].mountPath=/etc/grafana/provisioning/dashboards/custom-dashboards.yaml \
+    --set grafana.extraVolumeMounts[2].subPath=custom-dashboards.yaml \
+    \
+    --set-json prometheus.prometheusSpec.serviceMonitorSelector='{}' \
+    --set-json prometheus.prometheusSpec.serviceMonitorNamespaceSelector='{}' \
+    --atomic \
+    --wait --timeout 10m || log_error "Failed to deploy Prometheus stack."
+log_success "Prometheus stack deployed successfully."
+
+# 7. Wait for Prometheus Operator to be Ready (Robustly)
+log_info "Waiting for Prometheus Operator pod to be scheduled and ready..."
+OPERATOR_POD_NAME=$(find_pod_name_robustly "${GRAFANA_NAMESPACE}" "kube-prom-operator" "Prometheus Operator")
+kubectl wait --for=condition=ready pod "${OPERATOR_POD_NAME}" -n "${GRAFANA_NAMESPACE}" --timeout=300s || log_error "Prometheus Operator pod not ready within timeout."
+log_success "Prometheus Operator pod is ready."
+
+# 8. Wait for remaining monitoring stack pods to be ready (including Grafana pod)
+log_info "Waiting for remaining monitoring stack pods to be ready..."
+# Use robust finding for Prometheus server pod
+PROMETHEUS_SERVER_POD_NAME=$(find_pod_name_robustly "${GRAFANA_NAMESPACE}" "prometheus-stack-kube-prom-prometheus" "Prometheus Server")
+kubectl wait --for=condition=ready pod "${PROMETHEUS_SERVER_POD_NAME}" -n "${GRAFANA_NAMESPACE}" --timeout=300s || log_error "Prometheus server pod not ready within timeout."
+
+# Use robust finding for Grafana pod
+GRAFANA_POD_NAME=$(find_pod_name_robustly "${GRAFANA_NAMESPACE}" "prometheus-stack-grafana" "Grafana")
+kubectl wait --for=condition=ready pod "${GRAFANA_POD_NAME}" -n "${GRAFANA_NAMESPACE}" --timeout=300s || log_error "Grafana pod not ready within timeout."
+log_success "Remaining monitoring stack pods are ready."
+
+
+# --- Local Go Application Build and Test ---
+log_step "Building and testing local Go application..."
+go build -o "${APP_NAME}" . || log_error "Go application build failed."
+log_success "Go application binary built: ./${APP_NAME}"
+
+log_info "Starting local Go application in background for API tests..."
+# Ensure certs are available for local app
+if [ ! -f "./certs/server.crt" ] || [ ! -f "./certs/server.key" ]; then
+    log_error "TLS certificates not found in ./certs/. Run 'dev-setup.sh' first."
 fi
+PORT=8443 MAX_KEY_SIZE=64 \
+TLS_CERT_FILE=./certs/server.crt \
+TLS_KEY_FILE=./certs/server.key \
+./"${APP_NAME}" > /dev/null 2>&1 &
+LOCAL_APP_PID=$!
+log_info "Local Go application started with PID: ${LOCAL_APP_PID}"
+sleep 5 # Give app time to start
 
-# Verify readiness endpoint via port-forward
-log_info "Checking Kubernetes readiness endpoint (via localhost:${LOCAL_K8S_PORT})..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:${LOCAL_K8S_PORT}/ready")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Kubernetes readiness endpoint (Port-Forward): OK"
-else
-    log_error "Kubernetes readiness endpoint: FAILED (Status: ${HTTP_STATUS})"
-fi
+test_api_endpoints "https://localhost:8443" "Local Go App"
 
-# Verify key generation endpoint via port-forward
-log_info "Checking Kubernetes key generation endpoint (via localhost:${LOCAL_K8S_PORT})..."
-KEY_RESPONSE=$(curl -k -s "https://localhost:${LOCAL_K8S_PORT}/key/32")
-# A 32-byte key, base64 encoded, is 44 characters long. wc -c includes the newline, so 45.
-if echo "${KEY_RESPONSE}" | grep -q '"key":' && [ "$(echo "${KEY_RESPONSE}" | jq -r '.key' | wc -c)" -eq 45 ]; then
-    log_success "Kubernetes key generation endpoint (Port-Forward): OK (Key: $(echo "${KEY_RESPONSE}" | jq -r '.key'))"
-else
-    log_error "Kubernetes key generation endpoint (Port-Forward): FAILED (Response: ${KEY_RESPONSE})"
-fi
+log_info "Stopping local Go application (PID: ${LOCAL_APP_PID})..."
+kill "${LOCAL_APP_PID}" || true
+wait "${LOCAL_APP_PID}" 2>/dev/null || true # Wait for it to terminate
+log_success "Local Go application stopped."
 
-# Verify metrics endpoint via port-forward
-log_info "Checking Kubernetes metrics endpoint (via localhost:${LOCAL_K8S_PORT})..."
-HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:${LOCAL_K8S_PORT}/metrics")
-if [ "${HTTP_STATUS}" -eq 200 ]; then
-    log_success "Kubernetes metrics endpoint (Port-Forward): OK"
-else
-    log_error "Kubernetes metrics endpoint (Port-Forward): FAILED (Status: ${HTTP_STATUS})"
-fi
-# Kill the background port-forward process
-log_info "Stopping kubectl port-forward process (PID: ${PORT_FORWARD_PID})..."
-kill "${PORT_FORWARD_PID}" > /dev/null 2>&1 || true # Kill and suppress error if already dead
-wait "${PORT_FORWARD_PID}" 2>/dev/null || true # Wait for process to terminate
-log_success "kubectl port-forward stopped."
 
-log_success "Key Server Kubernetes deployment verified successfully via local port-forward."
+# --- Docker Image Build and Local Container Test ---
+log_step "Building Docker image and testing local container..."
+docker build -t "${APP_NAME}" . || log_error "Docker image build failed."
+log_success "Docker image built: ${APP_NAME}"
 
-# --- Ingress Verification (Optional, relies on host networking and /etc/hosts) ---
-# This section remains for full external verification, but will likely still timeout if host networking is the issue.
-log_step "Verifying Kubernetes Ingress (requires /etc/hosts entry for key-server.local)..."
-log_info "Please add '127.0.0.1 key-server.local' to your /etc/hosts file if you haven't already."
-log_info "Trying to access Ingress endpoint..."
+log_info "Running Docker container for API tests..."
+docker run -d --rm --name "${APP_NAME}-test" -p 8443:8443 \
+  -v "$(pwd)/certs:/etc/key-server/tls" \
+  -e PORT=8443 \
+  -e TLS_CERT_FILE=/etc/key-server/tls/server.crt \
+  -e TLS_KEY_FILE=/etc/key-server/tls/server.key \
+  "${APP_NAME}" || log_error "Failed to run Docker container."
+log_success "Docker container '${APP_NAME}-test' started."
+sleep 5 # Give container time to start
 
-# Get Kind IP for --resolve
-KIND_IP=$(docker inspect "${APP_NAME}-control-plane" --format '{{ .NetworkSettings.Networks.kind.IPAddress }}' 2>/dev/null || true)
-if [ -z "${KIND_IP}" ]; then
-    log_info "Could not determine Kind cluster IP for Ingress test. Skipping Ingress verification."
-else
-    # Give ingress controller a moment to configure
-    sleep 10
+test_api_endpoints "https://localhost:8443" "Docker Container"
 
-    # Access Ingress via hostname
-    INGRESS_URL="https://key-server.local"
-    log_info "Attempting Ingress access to ${INGRESS_URL} (resolving to ${KIND_IP})..."
-    set +e
-    CURL_INGRESS_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" --resolve "key-server.local:443:${KIND_IP}" "${INGRESS_URL}/health")
-    set -e
-    if [ "${CURL_INGRESS_STATUS}" -eq 200 ]; then
-        log_success "Kubernetes Ingress health endpoint: OK"
-    else
-        log_error "Kubernetes Ingress health endpoint: FAILED (Status: ${CURL_INGRESS_STATUS}). Ensure /etc/hosts entry and Ingress controller are working."
-    fi
-fi
+log_info "Stopping and removing Docker container '${APP_NAME}-test'..."
+docker stop "${APP_NAME}-test" >/dev/null 2>&1 || true
+docker rm "${APP_NAME}-test" >/dev/null 2>&1 || true
+log_success "Docker container stopped and removed."
 
-log_success "End-to-end build, deploy, and verify process completed successfully!"
 
-# --- Final Cleanup (Optional, can be run separately) ---
-# comprehensive_cleanup
+# --- Kubernetes Deployment and API Test ---
+log_step "Deploying Key Server to Kubernetes using Helm..."
+
+log_info "Loading Docker image '${APP_NAME}' into Kind cluster..."
+kind load docker-image "${APP_NAME}" --name "${APP_NAME}" || log_error "Failed to load Docker image into Kind cluster."
+log_success "Docker image loaded into Kind cluster."
+
+log_info "Creating Kubernetes TLS secret from generated certificates..."
+kubectl create secret tls key-server-key-server-app-tls-secret \
+    --cert=./certs/server.crt \
+    --key=./certs/server.key \
+    --dry-run=client -o yaml | kubectl apply -f - || log_error "Failed to create TLS secret."
+log_success "Kubernetes TLS secret created."
+
+log_info "Installing/Upgrading Helm chart for 'key-server'..."
+helm upgrade --install "${APP_NAME}" ./deploy/kubernetes/key-server-chart \
+    --set image.repository="${APP_NAME}" \
+    --set image.tag=latest \
+    --set service.type=NodePort \
+    --set ingress.enabled=true \
+    --set "ingress.tls[0].secretName=key-server-key-server-app-tls-secret" \
+    --set config.maxKeySize=64 \
+    --set service.port=8443 \
+    --set service.targetPort=8443 \
+    --wait --timeout 10m || log_error "Helm deployment failed."
+log_success "Helm deployment completed."
+
+log_info "Dashboards are expected to be loaded directly by Grafana from the /var/lib/grafana/dashboards/key-server path."
+
+# Kubernetes API Test
+log_info "Performing API tests on Kubernetes deployed application..."
+K8S_SVC_NAME="${APP_NAME}-key-server-app" # Corrected service name for port-forward
+log_info "Starting kubectl port-forward for Kubernetes API tests..."
+kubectl port-forward "svc/${K8S_SVC_NAME}" 8443:8443 -n default > /dev/null 2>&1 &
+K8S_PF_PID=$!
+log_info "Kubectl port-forward started with PID: ${K8S_PF_PID}"
+sleep 5 # Give port-forward time to establish
+
+test_api_endpoints "https://localhost:8443" "Kubernetes Deployment"
+
+log_info "Stopping kubectl port-forward (PID: ${K8S_PF_PID})..."
+kill "${K8S_PF_PID}" || true
+wait "${K8S_PF_PID}" 2>/dev/null || true # Wait for it to terminate
+log_success "Kubectl port-forward stopped."
+
+
+log_success "All deployments and verifications completed successfully!"
+
+echo "\n--- GRAFANA ACCESS INSTRUCTIONS ---"
+echo "Grafana is deployed and should have your custom dashboards."
+echo "1. In a NEW terminal tab/window, run the following to port-forward Grafana:"
+echo "   kubectl port-forward svc/prometheus-stack-grafana 3000:3000 -n ${GRAFANA_NAMESPACE}"
+echo "2. Open your web browser to: http://localhost:3000"
+echo "3. Log in with Username: admin and Password: The secure password you entered earlier."
+echo "4. Navigate to Dashboards -> Browse (or Search for 'Key Server') and verify 'Key Server HTTP Overview' and 'Key Server Key Generation' are present and show data."
+echo "Note: It might take a minute or two for Grafana to fully load dashboards from ConfigMaps after its pod becomes ready."

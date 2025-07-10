@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "key-server-app.fullname" . }}
+  name: {{ include "key-server.fullname" . }} # Corrected from key-server-app.fullname
   labels:
-    {{- include "key-server-app.labels" . | nindent 4 }}
+    {{- include "key-server.labels" . | nindent 4 }} # Corrected from key-server-app.labels
   annotations:
     # Prometheus annotations for automatic scraping
     prometheus.io/scrape: "true"
@@ -17,4 +17,4 @@ spec:
       protocol: TCP
       name: https # Name the port for clarity and consistency
   selector:
-    {{- include "key-server-app.selectorLabels" . | nindent 4 }}
+    {{- include "key-server.selectorLabels" . | nindent 4 }} # Corrected from key-server-app.selectorLabels

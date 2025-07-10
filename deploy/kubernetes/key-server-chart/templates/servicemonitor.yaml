@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "key-server.fullname" . }} # Corrected from key-server-app.fullname
+  labels:
+    {{- include "key-server.labels" . | nindent 4 }} # Corrected from key-server-app.labels
+    release: prometheus-stack # This label is crucial for Prometheus to discover this ServiceMonitor
+spec:
+  selector:
+    matchLabels:
+      {{- include "key-server.selectorLabels" . | nindent 6 }} # Corrected from key-server-app.selectorLabels
+  endpoints:
+    - port: http # This should match the name of the port in your Service definition
+      path: /metrics
+      interval: 30s
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}

@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "key-server-app.fullname" . }} # Corrected helper name
+  name: {{ include "key-server.fullname" . }}
   labels:
-    {{- include "key-server-app.labels" . | nindent 4 }} # Corrected helper name
+    {{- include "key-server.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "key-server-app.selectorLabels" . | nindent 6 }} # Corrected helper name
+      {{- include "key-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -18,13 +18,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "key-server-app.selectorLabels" . | nindent 8 }} # Corrected helper name
+        {{- include "key-server.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "key-server-app.serviceAccountName" . }} # Corrected helper name
+      serviceAccountName: {{ include "key-server.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -43,9 +43,9 @@ spec:
             - name: MAX_KEY_SIZE
               value: "{{ .Values.config.maxKeySize }}"
             - name: TLS_CERT_FILE
-              value: "/etc/key-server/tls/server.crt"
+              value: "/etc/key-server/tls/tls.crt" # CORRECTED: changed to tls.crt
             - name: TLS_KEY_FILE
-              value: "/etc/key-server/tls/server.key"
+              value: "/etc/key-server/tls/tls.key" # CORRECTED: changed to tls.key
           livenessProbe:
             httpGet:
               path: /health
@@ -73,7 +73,7 @@ spec:
       volumes:
         - name: tls-certs
           secret:
-            secretName: {{ include "key-server-app.fullname" . }}-tls-secret # Corrected helper name
+            secretName: {{ include "key-server.fullname" . }}-tls-secret
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

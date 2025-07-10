@@ -1,5 +1,5 @@
 {{- if .Values.ingress.enabled -}}
-{{- $fullName := include "key-server-app.fullname" . -}}
+{{- $fullName := include "key-server.fullname" . -}} # Corrected from key-server-app.fullname
 {{- $svcPort := .Values.service.port -}}
 {{- $ingressApiVersion := "extensions/v1beta1" }}
 {{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion }}
@@ -10,7 +10,7 @@ kind: Ingress
 metadata:
   name: {{ $fullName }}-ingress
   labels:
-    {{- include "key-server-app.labels" . | nindent 4 }}
+    {{- include "key-server.labels" . | nindent 4 }} # Corrected from key-server-app.labels
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
