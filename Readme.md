@@ -1,4 +1,3 @@
-
 # Key Server Application - Comprehensive Guide for Team Members
 ---
 Welcome to the Key Server Application repository! This document will guide you through understanding the project, setting up your development environment, deploying the application end-to-end on a local Kubernetes cluster (using Docker Desktop and Kind), and setting up a local monitoring stack with Prometheus and Grafana.
@@ -13,7 +12,9 @@ Welcome to the Key Server Application repository! This document will guide you t
 4.  **Local Setup & Tools Installation**
       * Initial Setup Script (`dev-setup.sh`)
 5.  **Key Server Application Preparation for Monitoring**
-6.  **Automated End-to-End Deployment & Verification (`app_build_and_verification.sh`)**
+6.  **Comprehensive Testing Strategy and Automated Verification**
+      * 6.1. Unit Tests (Go)
+      * 6.2. End-to-End & Integration Tests with `app_build_and_verification.sh`
 7.  **Cleanup Script (`cleanup.sh`)**
 8.  **Verify Monitoring Setup**
       * 8.1. Verify Kubernetes Pods and Services
@@ -48,7 +49,7 @@ Welcome to the Key Server Application repository! This document will guide you t
 -----
 
 ## 1. Project Overview
-
+---
 The Key Server Application is a simple Go-based microservice designed to generate cryptographically secure keys of a specified length. It exposes HTTP/HTTPS endpoints for health checks, readiness checks, and key generation, and also integrates with Prometheus for metrics collection.
 
 **Key Features:**
@@ -61,7 +62,7 @@ The Key Server Application is a simple Go-based microservice designed to generat
 -----
 
 ## 2. Repository Structure
-
+---
 ```
 
 .
@@ -98,7 +99,7 @@ The Key Server Application is a simple Go-based microservice designed to generat
 -----
 
 ## 3. Prerequisites
-
+----
 Before you begin, ensure you have the following tools installed on your system:
 
   * **Go (v1.22 or later):** The programming language for the application.
@@ -121,7 +122,7 @@ Before you begin, ensure you have the following tools installed on your system:
 -----
 
 ## 4. Local Setup & Tools Installation
-
+---
 This section covers the initial setup of your development environment.
 
 ### Initial Setup Script (`dev-setup.sh`)
@@ -147,7 +148,7 @@ This script will:
 -----
 
 ## 5. Key Server Application Preparation for Monitoring
-
+----
 For Prometheus to automatically discover and scrape metrics from your Key Server application, its Kubernetes Service needs specific annotations.
 
 **Action:** Ensure your `deploy/kubernetes/key-server-chart/templates/service.yaml` file includes the following annotations within its `metadata` section:
@@ -175,16 +176,45 @@ These files should correctly use `key-server-app` as the prefix for helper funct
 
 -----
 
-## 6. Automated End-to-End Deployment & Verification (`app_build_and_verification.sh`)
+## 6. Comprehensive Testing Strategy and Automated Verification
+----
+This project employs a robust and multi-layered testing strategy to ensure the reliability, correctness, and deployability of the Key Server Application. This strategy includes both granular unit tests and comprehensive end-to-end/integration tests, orchestrated by an automated verification script.
 
-This script provides a fully automated workflow that handles everything from building your Go application to deploying and verifying it and the monitoring stack in your local Kubernetes cluster. It's designed for rapid iteration and confidence, combining many manual steps into a single command.
+### 6.1. Unit Tests (Go)
 
-### How `app_build_and_verification.sh` Works (End-to-End Automation):
+**What are they?** Unit tests are the foundational layer of testing, focusing on individual functions, methods, or components (units) of the codebase in isolation from their dependencies.
 
-The `app_build_and_verification.sh` script automates the following comprehensive sequence:
+**Why do we test for them?**
+  * **Early Bug Detection:** They help identify and fix bugs at the earliest possible stage of development, where they are typically cheapest and easiest to resolve.
+  * **Component Validation:** They ensure that each piece of business logic (e.g., key generation, configuration parsing, metric incrementing) behaves exactly as expected under various conditions.
+  * **Isolation:** By mocking external dependencies (like other services, databases, or external APIs), unit tests verify the logic of a single unit without external factors influencing the result. This makes them fast and reliable.
+  * **Code Quality & Maintainability:** Well-written unit tests serve as living documentation of the code's intended behavior and make refactoring safer, as changes can be verified quickly.
 
-1.  **Go Application Build & Local API Test:** Compiles the Go source code. It then runs the compiled binary locally, starts it in the background, and performs API tests against its `/health`, `/ready`, `/key/{length}`, and `/metrics` endpoints.
-2.  **Docker Image Build & Local Container API Test:** Creates a Docker image. It then runs this image as a standalone container, port-forwards it, and performs API tests against its `/health`, `/ready`, `/key/{length}`, and `/metrics` endpoints.
+* **Location:** Test files (`_test.go`) are located alongside the source code in their respective `internal/` subdirectories (e.g., `internal/handler/handler_test.go`, `internal/keyservice/keyservice_test.go`).
+* **Coverage:** Each test suite includes:
+    * **Positive Test Cases:** Verifying correct behavior with valid inputs (e.g., `keygenerator.Generate` producing keys of expected length, `handler.HealthCheck` returning "Healthy").
+    * **Negative Test Cases:** Verifying graceful error handling with invalid or unexpected inputs (e.g., `keygenerator.Generate` returning errors for invalid lengths, `handler.GenerateKey` returning appropriate HTTP 400/500 for bad requests or service errors).
+    * **Mocking:** Dependencies are often mocked to isolate the component under test (e.g., `MockKeyService` and `MockMetricsService` are used in handler tests).
+* **Execution:**
+    ```bash
+    go test ./...
+    ```
+    This command recursively finds and runs all `_test.go` files within your Go module, providing detailed output for each package. The `[no test files]` message for the root package is normal, as unit tests are focused on the internal library packages.
+
+### 6.2. End-to-End & Integration Tests with `app_build_and_verification.sh`
+
+**What are they?** These tests focus on the interactions between different components of the system (integration tests) and on verifying the entire application's workflow from start to finish, including its deployment and external dependencies (end-to-end tests). The `app_build_and_verification.sh` script automates these layers.
+
+**Why do we test for them?**
+  * **System Integrity:** They confirm that all parts of the application work together correctly, including API endpoints, internal service calls, configuration loading, and metric exposition.
+  * **Deployment Validation:** They verify that the application can be successfully built, containerized, deployed (e.g., to Kubernetes via Helm), and accessed as intended in realistic environments. This ensures the deployment artifacts are correct.
+  * **External Dependency Integration:** They ensure proper interaction with external systems like Prometheus for monitoring, verifying that metrics are correctly exposed, scraped, and available for visualization.
+  * **User Journey Simulation:** End-to-end tests simulate real user interactions, providing confidence that the critical paths of the application function as expected in a deployed state.
+
+The `app_build_and_verification.sh` script automates the full build, deployment, and verification of the application and its monitoring stack. This script provides an integrated test suite that covers:
+
+1.  **Go Application Build & Local API Test:** Compiles the Go source code. It then runs the compiled binary locally, starts it in the background, and performs API tests against its `/health`, `/ready`, `/key/{length}`, and `/metrics` endpoints. This includes both **positive and negative API tests** to ensure correct responses (HTTP 200, 400, 405).
+2.  **Docker Image Build & Local Container API Test:** Creates a Docker image. It then runs this image as a standalone container, port-forwards it, and performs the same suite of **positive and negative API tests** against its endpoints.
 3.  **Kind Cluster Setup:** Creates a local Kind Kubernetes cluster (if one doesn't exist) and loads the Docker image into it.
 4.  **Kubernetes TLS Secret Creation:** Creates the necessary TLS secret in Kubernetes.
 5.  **Prometheus Helm Repository:** Adds the Prometheus Community Helm repository.
@@ -194,7 +224,8 @@ The `app_build_and_verification.sh` script automates the following comprehensive
 9.  **Key Server Helm Deployment:** Installs or upgrades the Key Server application's Helm chart to the Kind cluster.
 10. **Kubernetes Deployment API Test (via `kubectl port-forward`):** Waits for the Key Server deployment to be ready and then establishes a temporary `kubectl port-forward` tunnel to its service. It automatically tests the `/health`, `/ready`, `/key/{length}`, and `/metrics` endpoints via `localhost`. This step should report `[SUCCESS]` if the application is running correctly within Kubernetes.
 11. **Kubernetes Ingress Verification:** Attempts to verify the Ingress endpoint (if enabled). (Note: This step might still fail on macOS due to specific host network routing issues, as detailed in **10.11. Symptom: Kubernetes Ingress Verification Fails (Status: 000)**).
-12. **Reports Status:** Provides clear "OK" or "FAILED" messages for each stage and test. If any stage or test fails, the script will exit with an error, guiding you to the specific troubleshooting section.
+12. **Prometheus Metrics Verification:** The script queries Prometheus directly after Kubernetes deployment to confirm that application metrics (e.g., `http_requests_total`, `key_generations_total`) are being collected as expected, ensuring proper instrumentation and scrape configuration.
+13. **Reports Status:** Provides clear "OK" or "FAILED" messages for each stage and test. If any stage or test fails, the script will exit with an error, guiding you to the specific troubleshooting section.
 
 ### How to Run `app_build_and_verification.sh`:
 
@@ -212,7 +243,7 @@ The `app_build_and_verification.sh` script automates the following comprehensive
 -----
 
 ## 7\. Cleanup Script (`cleanup.sh`)
-
+-----
 This script helps you clean up local Docker containers and Kubernetes deployments, including the Kind cluster and monitoring stack. It's designed to be robust and provides verbose output to confirm resource destruction.
 
 ### How to Run `cleanup.sh`:
@@ -231,7 +262,7 @@ This script helps you clean up local Docker containers and Kubernetes deployment
 -----
 
 ## 8\. Verify Monitoring Setup
-
+----
 Once the `app_build_and_verification.sh` script completes successfully, you can manually verify that Prometheus and Grafana are running and monitoring your application.
 
 ### 8.1. Verify Kubernetes Pods and Services
@@ -268,7 +299,7 @@ Open a new terminal and run these commands to check the status of the monitoring
 3.  **Access Prometheus UI in your browser:**
     Navigate to **`http://localhost:9090`**.
       * Go to **Status -\> Targets**. You should see your `key-server-key-server-app` service listed as a target, with its state as **UP**. This confirms Prometheus is successfully scraping your application's metrics.
-      * Go to **Graph**. In the expression bar, type `http_requests_total{job="key-server-key-server-app"}` and click "Execute" to see your application's HTTP request metrics. You can also try `key_generations_total{job="key-server-key-server-app"}`.
+      * Go to **Graph. In the expression bar, type `http_requests_total{job="key-server-key-server-app"}` and click "Execute" to see your application's HTTP request metrics. You can also try `key_generations_total{job="key-server-key-server-app"}`.
 
 ### 8.3. Access Grafana UI (via `kubectl port-forward`)
 
@@ -310,7 +341,7 @@ Remember to go back to the terminals where `kubectl port-forward` commands are r
 -----
 
 ## 9\. Creating Load and Observing on Grafana Dashboards
-
+----
 Once your Key Server application and monitoring stack are deployed and verified, you can generate load on the application and observe the metrics in real-time on your Grafana dashboards.
 
 ### 9.1. Ensure Grafana is Accessible
@@ -383,7 +414,7 @@ While the load generation is running, switch back to your browser with the Grafa
 -----
 
 ## 10\. Troubleshooting Common Issues
-
+----
 ### 10.1. `kubectl` connectivity issues (`localhost:8080` errors)
 
 **Symptom:** Commands like `kubectl get pods` return errors like "The connection to the server localhost:8080 was refused - did you specify the right host or port?".
@@ -507,8 +538,6 @@ While the load generation is running, switch back to your browser with the Grafa
   * **macOS Specific Routing:** On macOS, `kind` clusters (and Docker Desktop's Kubernetes) often have difficulty routing external traffic back into the cluster's Ingress controller via `localhost`. While Windows and Linux often work with `localhost`, macOS might require different network configurations or direct pod IP access (which is less stable for testing).
     **Fix:**
 
-<!-- end list -->
-
 1.  **Verify Ingress Controller:**
     ```bash
     kubectl get pods -n prometheus-operator -l app.kubernetes.io/name=ingress-nginx
@@ -582,7 +611,7 @@ This section covers common and complex issues encountered when setting up Grafan
 
 #### Symptom: Grafana "Datasource prometheus was not found" Error
 
-**Problem:** When opening a Grafana dashboard, the browser's developer console (F12 -\> Console) shows errors like `PanelQueryRunner Error {message: 'Datasource prometheus was not found'}`. This occurs even if you can manually see "Prometheus" listed under Grafana's "Data sources".
+**Problem:** When opening a Grafana dashboard, the browser's developer console (F12 -> Console) shows errors like `PanelQueryRunner Error {message: 'Datasource prometheus was not found'}`. This occurs even if you can manually see "Prometheus" listed under Grafana's "Data sources".
 
 **Root Cause:**
 
@@ -638,7 +667,7 @@ This section covers common and complex issues encountered when setting up Grafan
 **How to Verify/Fix:**
 
 1.  **Use Grafana's Query Inspector:**
-      * On a blank panel, click the "..." menu -\> "Inspect" -\> "Query Inspector" -\> "Data" tab.
+      * On a blank panel, click the "..." menu -> "Inspect" -> "Query Inspector" -> "Data" tab.
       * Click the "Refresh" button.
       * If you see `status: 200` but the `frames` array is empty or the table says "No data", then the query itself is returning no results from Prometheus.
 2.  **Verify PromQL in Prometheus UI:**
@@ -660,7 +689,7 @@ This section covers common and complex issues encountered when setting up Grafan
 -----
 
 ## 11\. API Endpoints
-
+---
 The Key Server application exposes the following HTTP/HTTPS endpoints:
 
   * **`/health` (GET):** Returns `{"status": "Healthy"}` if the application is running.
@@ -671,7 +700,7 @@ The Key Server application exposes the following HTTP/HTTPS endpoints:
 -----
 
 ## 12\. Configuration
-
+----
 The Key Server application can be configured using environment variables:
 
   * **`PORT` (default: `8080`):** The port the HTTP server listens on.
@@ -682,7 +711,7 @@ The Key Server application can be configured using environment variables:
 -----
 
 ## 13\. Local Development (Manual)
-
+---
 For manual local development without Docker or Kubernetes:
 
 1.  **Build the application:**
@@ -707,7 +736,7 @@ For manual local development without Docker or Kubernetes:
 -----
 
 ## 14\. Docker (Manual)
-
+---
 To manually build and run the application using Docker:
 
 1.  **Build the Docker image:**
@@ -741,7 +770,7 @@ To manually build and run the application using Docker:
 -----
 
 ## 15\. Kubernetes (Helm - Manual)
-
+-----
 To manually deploy the application to Kubernetes using Helm (requires a running Kubernetes cluster and `kubectl` context set):
 
 1.  **Generate certificates (if not already done):**
