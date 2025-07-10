@@ -208,6 +208,7 @@ data:
         isDefault: true
         version: 1
         editable: false
+        uid: prometheus # <--- Added this line
 EOF
 log_success "Grafana Prometheus Data Source Provisioning ConfigMap created."
 

@@ -39,7 +39,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "paletteColor"
+            "mode": "fixed",
+            "fixedColor": "blue"
           },
           "custom": {
             "axisCenteredZero": false,
@@ -110,8 +111,8 @@
             "uid": "prometheus"
           },
           "editorMode": "builder",
-          "expr": "rate(key_generation_total{job=\"key-server\"}[$__interval])",
-          "legendFormat": "Key Generations",
+          "expr": "rate(key_generations_total{job=\"key-server-key-server-app\"}[30s])",
+          "legendFormat": "{{length}}",
           "range": true,
           "refId": "A"
         }
@@ -127,7 +128,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "paletteColor"
+            "mode": "fixed",
+            "fixedColor": "blue"
           },
           "custom": {
             "axisCenteredZero": false,
@@ -198,8 +200,8 @@
             "uid": "prometheus"
           },
           "editorMode": "builder",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(key_generation_duration_seconds_bucket{job=\"key-server\"}[$__interval])))",
-          "legendFormat": "Key Generation Duration (99th Percentile)",
+          "expr": "histogram_quantile(0.99, sum by (le, length) (rate(key_generation_duration_seconds_bucket{job=\"key-server-key-server-app\"}[30s])))",
+          "legendFormat": "{{length}}",
           "range": true,
           "refId": "A"
         }
