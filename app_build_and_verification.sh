@@ -24,6 +24,10 @@ MAX_KEY_SIZE="64"
 TLS_CERT_FILE="./certs/server.crt"
 TLS_KEY_FILE="./certs/server.key"
 
+# Hardcode the Grafana admin password for testing purposes as requested.
+# This bypasses interactive input issues and ensures the exact length.
+GRAFANA_ADMIN_PASSWORD="admin"
+
 # --- Grafana Dashboard Configuration ---
 GRAFANA_DASHBOARDS_DIR="./dashboards" # Assuming your dashboards are in a 'dashboards' folder relative to the script
 KEY_GEN_DASHBOARD_FILE="${GRAFANA_DASHBOARDS_DIR}/key-generation.json"
@@ -373,16 +377,35 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update || { log_error "Failed to update Helm repos."; exit 1; }
 log_success "Helm repositories added and updated."
 
-read -s -p "Enter a secure password for Grafana admin user: " GRAFANA_ADMIN_PASSWORD
-echo # Newline after password input
+# --- DIAGNOSTIC: Confirm password length (not value for security) ---
+log_info "DEBUG: Hardcoded Grafana admin password length: ${#GRAFANA_ADMIN_PASSWORD}"
 
-log_info "Creating Kubernetes Secret for Grafana admin password..."
-kubectl create namespace "${PROMETHEUS_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true # Ensure namespace exists
-kubectl create secret generic grafana-admin-secret \
-  --from-literal=admin-user=admin \
+# Ensure the Prometheus namespace exists before creating ConfigMaps in it
+log_info "Ensuring Prometheus namespace '${PROMETHEUS_NAMESPACE}' exists..."
+kubectl create namespace "${PROMETHEUS_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - || { log_error "Failed to create Prometheus namespace."; exit 1; }
+log_success "Prometheus namespace '${PROMETHEUS_NAMESPACE}' ensured."
+
+# --- Manually Create Grafana Admin Secret ---
+log_info "Creating Kubernetes Secret 'prometheus-stack-grafana' for Grafana admin credentials..."
+# Pass plain text directly to --from-literal; kubectl handles base64 encoding.
+kubectl create secret generic prometheus-stack-grafana \
+  --from-literal=admin-user="admin" \
   --from-literal=admin-password="${GRAFANA_ADMIN_PASSWORD}" \
   --namespace "${PROMETHEUS_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - || { log_error "Failed to create Grafana admin secret."; exit 1; }
-log_success "Grafana admin secret 'grafana-admin-secret' created."
+log_success "Grafana admin secret 'prometheus-stack-grafana' created."
+
+# DIAGNOSTIC: Verify the secret content we just created
+log_info "DEBUG: Verifying manually created Grafana admin secret 'prometheus-stack-grafana'..."
+SECRET_USER_DECODED_LEN=$(kubectl get secret prometheus-stack-grafana -n "${PROMETHEUS_NAMESPACE}" -o jsonpath='{.data.admin-user}' | base64 --decode | awk '{print length}')
+SECRET_PASS_DECODED_LEN=$(kubectl get secret prometheus-stack-grafana -n "${PROMETHEUS_NAMESPACE}" -o jsonpath='{.data.admin-password}' | base64 --decode | awk '{print length}')
+log_info "DEBUG: Decoded user length from secret: ${SECRET_USER_DECODED_LEN}"
+log_info "DEBUG: Decoded password length from secret: ${SECRET_PASS_DECODED_LEN}"
+if [[ "${SECRET_USER_DECODED_LEN}" -eq 5 && "${SECRET_PASS_DECODED_LEN}" -eq "${#GRAFANA_ADMIN_PASSWORD}" ]]; then
+  log_success "DEBUG: Manually created secret content lengths match expected."
+else
+  log_error "DEBUG: WARNING! Manually created secret content lengths DO NOT match expected. User: ${SECRET_USER_DECODED_LEN} vs 5, Pass: ${SECRET_PASS_DECODED_LEN} vs ${#GRAFANA_ADMIN_PASSWORD}"
+fi
+
 
 # --- Grafana Dashboard and Data Source Provisioning ---
 log_step "Creating Grafana Dashboard JSON ConfigMaps..."
@@ -409,32 +432,6 @@ kubectl label configmap grafana-dashboard-key-generation \
   --namespace "${PROMETHEUS_NAMESPACE}" --overwrite || { log_error "Failed to label Key Generation dashboard ConfigMap."; exit 1; }
 log_success "Grafana Dashboard ConfigMaps labeled."
 
-
-# Removed: The separate grafana-custom-dashboards-provisioning ConfigMap is no longer needed.
-# This was causing confusion as the sidecar uses labels, not this direct provisioning config.
-# log_step "Creating Grafana Dashboard Provisioning Configuration ConfigMap..."
-# cat <<EOF | kubectl apply -f -
-# apiVersion: v1
-# kind: ConfigMap
-# metadata:
-#   name: grafana-custom-dashboards-provisioning
-#   namespace: ${PROMETHEUS_NAMESPACE}
-# data:
-#   dashboards.yaml: |
-#     apiVersion: 1
-#     providers:
-#       - name: 'Key Server'
-#         orgId: 1
-#         folder: 'Key Server App'
-#         type: file
-#         disableDelete: false
-#         editable: true
-#         options:
-#           path: /tmp/dashboards
-# EOF
-# if [ $? -ne 0 ]; then log_error "Failed to create Grafana Dashboard Provisioning Configuration ConfigMap."; exit 1; fi
-# log_success "Grafana Dashboard Provisioning Configuration ConfigMap created."
-
 log_info "Adding a short delay for ConfigMap propagation..."
 sleep 5
 
@@ -445,32 +442,19 @@ TEMP_PROM_VALUES_FILE="temp_prometheus_values.yaml"
 cat <<EOF > "${TEMP_PROM_VALUES_FILE}"
 grafana:
   admin:
-    user: admin
-    password: "${GRAFANA_ADMIN_PASSWORD}" # Directly set password for simplicity in this script
+    existingSecret: prometheus-stack-grafana
+    userKey: admin-user
+    passwordKey: admin-password
   dashboardProviders:
-    # This section configures Grafana to look for dashboards in /tmp/dashboards
-    # where the k8s-sidecar will place them.
     providers:
-      - name: 'Key Server App Dashboards' # A descriptive name for the provider
+      - name: 'Key Server App Dashboards'
         orgId: 1
-        folder: 'Key Server App' # The folder where dashboards will appear in Grafana
+        folder: 'Key Server App'
         type: file
         disableDelete: false
         editable: true
         options:
-          path: /tmp/dashboards # This path corresponds to the sidecar's FOLDER env var
-  dashboards:
-    # Removed the 'custom' section as it's for a different provisioning method
-    # and might conflict with the sidecar.
-    # custom:
-    #   key-server:
-    #     enabled: true
-    #     folder: Key Server App
-    #     configMaps:
-    #       - configMapName: grafana-dashboard-http-overview
-    #         configMapNamespace: ${PROMETHEUS_NAMESPACE}
-    #       - configMapName: grafana-dashboard-key-generation
-    #         configMapNamespace: ${PROMETHEUS_NAMESPACE}
+          path: /tmp/dashboards
   grafana.ini:
     server:
       http_port: 3000
@@ -487,7 +471,7 @@ prometheus:
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelector:
       matchLabels:
-        app.kubernetes.io/name: key-server-app # This should match the ServiceMonitor for our app
+        app.kubernetes.io/name: key-server-app
     serviceMonitorNamespaceSelector:
       matchNames:
         - ${APP_NAMESPACE}
@@ -503,16 +487,56 @@ log_success "Prometheus stack deployed successfully."
 rm -f "${TEMP_PROM_VALUES_FILE}" # Clean up the temporary file
 
 log_info "Waiting for Prometheus Operator pod to be scheduled and ready..."
-# Corrected label for Prometheus Operator based on user's jsonpath output
 wait_for_pod_ready "${PROMETHEUS_NAMESPACE}" "kube-prometheus-stack-prometheus-operator" || { log_error "Prometheus Operator not ready."; exit 1; }
 log_success "Prometheus Operator pod is ready."
 
 log_info "Waiting for remaining monitoring stack pods to be ready..."
-# Corrected label for Prometheus Server (confirmed from previous output)
 wait_for_pod_ready "${PROMETHEUS_NAMESPACE}" "prometheus" || { log_error "Prometheus Server not ready."; exit 1; }
-# Corrected label for Grafana (confirmed from previous output)
 wait_for_pod_ready "${PROMETHEUS_NAMESPACE}" "grafana" || { log_error "Grafana not ready."; exit 1; }
 log_success "Remaining monitoring stack pods are ready."
+
+# --- DIAGNOSTIC: Verify Grafana pod's admin password environment variable ---
+log_info "DEBUG: Verifying Grafana pod's admin password environment variable..."
+GRAFANA_POD_NAME=$(kubectl get pods -n "${PROMETHEUS_NAMESPACE}" -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
+if [ -n "${GRAFANA_POD_NAME}" ]; then
+  # Get the password from the pod's environment variables (it's sourced from the secret)
+  POD_ENV_PASS_LENGTH=$(kubectl exec -it "${GRAFANA_POD_NAME}" -n "${PROMETHEUS_NAMESPACE}" -- printenv GF_SECURITY_ADMIN_PASSWORD | awk '{print length}') # Changed wc -c to awk
+  log_info "DEBUG: Grafana pod's GF_SECURITY_ADMIN_PASSWORD length: ${POD_ENV_PASS_LENGTH}"
+  if [[ "${POD_ENV_PASS_LENGTH}" -eq "${#GRAFANA_ADMIN_PASSWORD}" ]]; then
+    log_success "DEBUG: Grafana pod's password length matches entered length."
+  else
+    log_error "DEBUG: WARNING! Grafana pod's password length DOES NOT match entered length. This is a critical issue."
+  fi
+else
+  log_error "DEBUG: Grafana pod not found for environment variable check."
+fi
+
+# --- DIAGNOSTIC: Verify Grafana admin password in created secret 'prometheus-stack-grafana' ---
+log_info "DEBUG: Verifying Grafana admin password in created secret 'prometheus-stack-grafana'..."
+# Fetch the secret, decode the password, and log its length. DO NOT print the password itself.
+# This secret is created by the Helm chart when grafana.adminPassword is set.
+SECRET_PASS_LENGTH_FROM_CHART=$(kubectl get secret prometheus-stack-grafana -n "${PROMETHEUS_NAMESPACE}" -o jsonpath='{.data.admin-password}' | base64 --decode | awk '{print length}') # Changed wc -c to awk
+log_info "DEBUG: Decoded password length from 'prometheus-stack-grafana' secret: ${SECRET_PASS_LENGTH_FROM_CHART}"
+if [[ "${SECRET_PASS_LENGTH_FROM_CHART}" -eq "${#GRAFANA_ADMIN_PASSWORD}" ]]; then
+  log_success "DEBUG: Password length in 'prometheus-stack-grafana' secret matches entered length."
+else
+  log_error "DEBUG: WARNING! Password length in 'prometheus-stack-grafana' secret DOES NOT match entered length. This is the root cause!"
+fi
+
+
+# --- DIAGNOSTIC: Check Grafana logs for authentication errors ---
+log_info "DEBUG: Checking Grafana logs for authentication errors..."
+if [ -n "${GRAFANA_POD_NAME}" ]; then
+  AUTH_ERRORS=$(kubectl logs "${GRAFANA_POD_NAME}" -n "${PROMETHEUS_NAMESPACE}" | grep -iE "authentication failed|invalid credentials|login failed")
+  if [ -n "${AUTH_ERRORS}" ]; then
+    log_error "DEBUG: Grafana logs show authentication errors:"
+    echo "${AUTH_ERRORS}"
+  else
+    log_success "DEBUG: No explicit authentication errors found in Grafana logs."
+  fi
+else
+  log_error "DEBUG: Grafana pod not found for log check."
+fi
 
 
 # --- Build and Test Local Go Application ---
