@@ -75,6 +75,37 @@ graph TD
     class F k8s;
 ```
 
+```mermaid
+graph TD
+    subgraph Cluster
+        subgraph Default_Namespace
+            KeyServerApp[Key Server Application Pod]
+            KeyServerService[Key Server Service]
+            KeyServerServiceMonitor[Key Server ServiceMonitor]
+        end
+
+        subgraph Prometheus_Operator_Namespace
+            PrometheusOperator[Prometheus Operator Pod]
+            PrometheusServer[Prometheus Server Pod]
+            GrafanaPod[Grafana Pod]
+            GrafanaService[Grafana Service]
+            GrafanaSidecarDashboard[Grafana Sidecar]
+            GrafanaSidecarDatasource[Grafana Sidecar]
+        end
+
+        KeyServerApp -- Exposes /metrics --> KeyServerService
+        KeyServerService -- Targets --> KeyServerServiceMonitor
+        PrometheusOperator -- Discovers --> KeyServerServiceMonitor
+        PrometheusOperator -- Configures --> PrometheusServer
+        PrometheusServer -- Scrapes metrics from --> KeyServerService
+        PrometheusServer -- Stores metrics --> Time_Series_Database[Time Series Database]
+        GrafanaPod -- Queries --> PrometheusServer
+        User[User Browser] -- Accesses UI --> GrafanaService
+    end
+
+
+```
+
 **Core Components:**
 
 1.  **Key Server Application (Go Lang):** The microservice itself, responsible for key generation and exposing metrics.
