@@ -106,6 +106,50 @@ graph TD
 
 ```
 
+```mermaid
+graph TD
+    subgraph Local_Environment
+        A[app_build_and_verification.sh Script]
+    end
+
+    subgraph Kubernetes_Cluster
+        B[Key Server Application]
+        C[Key Server Service]
+        D[Key Server Helm Chart]
+        E[ServiceMonitor]
+
+        subgraph Monitoring_Stack
+            F[Prometheus Operator]
+            G[Prometheus Server]
+            H[Grafana]
+        end
+    end
+
+    A -- "Deploys" --> D
+    A -- "Deploys" --> F
+    A -- "Deploys" --> G
+    A -- "Deploys" --> H
+
+    D -- "Manages & Deploys" --> B
+    D -- "Manages & Deploys" --> C
+    D -- "Manages & Deploys" --> E
+
+    B -- "Exposes metrics" --> C
+    E -- "Watches for Service & Exposes Scrape Config" --> F
+    F -- "Configures dynamic scraping" --> G
+    G -- "Scrapes metrics from" --> C
+    H -- "Queries metrics from" --> G
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style B fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#ddf,stroke:#333,stroke-width:2px
+    style E fill:#ddf,stroke:#333,stroke-width:2px
+    style F fill:#9f9,stroke:#333,stroke-width:2px
+    style G fill:#9f9,stroke:#333,stroke-width:2px
+    style H fill:#9f9,stroke:#333,stroke-width:2px
+```
+
 **Core Components:**
 
 1.  **Key Server Application (Go Lang):** The microservice itself, responsible for key generation and exposing metrics.

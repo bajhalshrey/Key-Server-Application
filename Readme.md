@@ -353,7 +353,8 @@ You can generate load using `curl` in a simple loop or a more sophisticated tool
 
 ##### Option 1: Using `curl` (Simple Loop)
 
-Open a new terminal window and run the following command. This will continuously send requests to the `/key/32` endpoint, simulating load.
+* Open a new terminal window and run the following command. 
+* This will continuously send requests to the `/key/32` endpoint, simulating load.
 
 ```bash
 # First, ensure the Key Server is port-forwarded if you're not using Ingress
@@ -367,13 +368,14 @@ while true; do
 done
 ```
 
-Press **Ctrl+C** in this terminal to stop generating load.
-Adjust `sleep 0.1` to change the rate of requests (smaller number = higher load).
+* Press **Ctrl+C** in this terminal to stop generating load.
+* Adjust `sleep 0.1` to change the rate of requests (smaller number = higher load).
 
 ##### Option 2: Using `hey` (Recommended for Controlled Load)
 
-If you have `hey` installed (see **Prerequisites**), it provides more control over the load generation.
-Open a new terminal window and run:
+* If you have `hey` installed (see **Prerequisites**), it provides more control over the load generation.
+
+* **Open a new terminal window and run:**
 
 ```bash
 # First, ensure the Key Server is port-forwarded if you're not using Ingress
@@ -416,18 +418,27 @@ While the load generation is running, switch back to your browser with the Grafa
 ----
 #### 10.1. `kubectl` connectivity issues (`localhost:8080` errors)
 
-**Symptom:** Commands like `kubectl get pods` return errors like "The connection to the server localhost:8080 was refused - did you specify the right host or port?".
-**Root Cause:** `kubectl` is not configured to connect to your Kind cluster. This usually means the context is wrong or the Kind cluster isn't running.
+**Symptom:** 
+* Commands like `kubectl get pods` return errors like "The connection to the server localhost:8080 was refused - did you specify the right host or port?".
+
+**Root Cause:** 
+* `kubectl` is not configured to connect to your Kind cluster. 
+* This usually means the context is wrong or the Kind cluster isn't running.
+
 **Fix:**
 
-1.  Ensure Docker Desktop is running and Kubernetes is enabled.
-2.  Verify your Kind cluster is running: `kind get clusters`. If not, create it using `kind create cluster --name key-server`.
-3.  Set your kubectl context: `kubectl config use-context kind-key-server`.
+1. Ensure Docker Desktop is running and Kubernetes is enabled.
+2. **Verify your Kind cluster is running:** `kind get clusters`. 
+3. If not, create it using `kind create cluster --name key-server`.
+4. **Set your kubectl context:** `kubectl config use-context kind-key-server`.
 
 #### 10.2. Grafana `CreateContainerConfigError` (missing `admin-user` in secret)
 
-**Symptom:** Grafana pod fails to start with `CreateContainerConfigError` or similar messages in its `Events` (from `kubectl describe pod <grafana-pod> -n prometheus-operator`), indicating issues accessing `admin-user` or `admin-password` from the secret.
-**Root Cause:** The `grafana-admin-secret` was either created incorrectly or missing the `admin-user` key.
+**Symptom:** 
+* Grafana pod fails to start with `CreateContainerConfigError` or similar messages in its `Events` (from `kubectl describe pod <grafana-pod> -n prometheus-operator`), indicating issues accessing `admin-user` or `admin-password` from the secret.
+
+**Root Cause:** 
+* The `grafana-admin-secret` was either created incorrectly or missing the `admin-user` key.
 **Fix:**
 
 1.  Delete the existing secret (if any): `kubectl delete secret grafana-admin-secret -n prometheus-operator`
@@ -435,30 +446,41 @@ While the load generation is running, switch back to your browser with the Grafa
 
 #### 10.3. Helm `UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress`
 
-**Symptom:** Helm commands fail with `UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress`.
-**Root Cause:** A previous Helm operation failed or was interrupted, leaving a lock.
-**Fix:**
+**Symptom:** 
+* Helm commands fail with `UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress`.
 
-1.  Check Helm releases: `helm list -n <namespace>`.
-2.  If you see a release stuck in a pending state, you can roll it back to the last successful release or force delete it.
+**Root Cause:** 
+* A previous Helm operation failed or was interrupted, leaving a lock.
+
+**Fix:**
+1. **Check Helm releases:** `helm list -n <namespace>`.
+2. If you see a release stuck in a pending state, you can roll it back to the last successful release or force delete it.
       * `helm rollback <release-name> <revision-number> -n <namespace>`
       * `helm uninstall <release-name> -n <namespace> --no-hooks` (use with caution)
 
 #### 10.4. Helm Templating Errors (`no template "key-server.fullname"` etc.)
 
-**Symptom:** Helm install/upgrade fails with errors indicating that templates like `key-server.fullname` or `key-server.labels` cannot be found or are incorrect.
-**Root Cause:** This almost always means there's a typo in the `_helpers.tpl` file or in how you're calling the helpers (e.g., `include "key-server-app.fullname" .` vs `include "key-server.fullname" .`). The Helm chart `name` in `Chart.yaml` usually dictates the prefix.
-**Fix:**
+**Symptom:** 
+* Helm install/upgrade fails with errors indicating that templates like `key-server.fullname` or `key-server.labels` cannot be found or are incorrect.
 
-1.  Ensure your Helm chart's `Chart.yaml` has `name: key-server-app`.
+**Root Cause:** 
+* This almost always means there's a typo in the `_helpers.tpl` file or in how you're calling the helpers (e.g., `include "key-server-app.fullname" .` vs `include "key-server.fullname" .`). 
+* The Helm chart `name` in `Chart.yaml` usually dictates the prefix.
+
+**Fix:**
+1. Ensure your Helm chart's `Chart.yaml` has `name: key-server-app`.
 2.  In all templates (`deployment.yaml`, `service.yaml`, `ingress.yaml`, etc.), ensure you are consistently using `include "key-server-app.fullname" .` and `include "key-server-app.labels" .` where appropriate.
 
 #### 10.5. Ingress `pathType: Required value` error
 
-**Symptom:** Ingress deployment fails with `pathType: Required value`.
-**Root Cause:** Kubernetes Ingress API version `networking.k8s.io/v1` requires `pathType` to be explicitly defined for each path. Older examples might omit it.
-**Fix:**
+**Symptom:** 
+* Ingress deployment fails with `pathType: Required value`.
 
+**Root Cause:** 
+* Kubernetes Ingress API version `networking.k8s.io/v1` requires `pathType` to be explicitly defined for each path. 
+* Older examples might omit it.
+
+**Fix:**
   * Ensure your `ingress.yaml` file explicitly sets `pathType: Prefix` (or `Exact`) for each path. For example:
     ```yaml
     - path: /
@@ -472,37 +494,51 @@ While the load generation is running, switch back to your browser with the Grafa
 
 #### 10.6. Key Server Pod secret `"key-server-key-server-app-tls-secret"` not found
 
-**Symptom:** Key Server pod fails to start with errors indicating it cannot find the TLS secret for mounting.
-**Root Cause:** The Kubernetes TLS secret was not created before the Deployment, or its name doesn't match what the Deployment expects.
-**Fix:**
+**Symptom:** 
+* Key Server pod fails to start with errors indicating it cannot find the TLS secret for mounting.
 
-1.  Verify the secret name in `deploy/kubernetes/key-server-chart/templates/deployment.yaml` volume mounts. It should match the secret created by `app_build_and_verification.sh` (which is `key-server-key-server-app-tls-secret`).
-2.  Ensure the secret is created in the correct namespace (usually `default` for the app) before the Helm chart is installed/upgraded. The `app_build_and_verification.sh` script handles this.
+**Root Cause:** 
+* The Kubernetes TLS secret was not created before the Deployment, or its name doesn't match what the Deployment expects.
+
+**Fix:**
+1. Verify the secret name in `deploy/kubernetes/key-server-chart/templates/deployment.yaml` volume mounts. 
+2. It should match the secret created by `app_build_and_verification.sh` (which is `key-server-key-server-app-tls-secret`).
+3. Ensure the secret is created in the correct namespace (usually `default` for the app) before the Helm chart is installed/upgraded. 
+4. The `app_build_and_verification.sh` script handles this.
 
 #### 10.7. Helm `context deadline exceeded`
 
-**Symptom:** Helm commands hang and eventually fail with `context deadline exceeded`.
-**Root Cause:** The Kubernetes cluster is unresponsive, or the pods Helm is waiting for (`--wait`) are not becoming ready within the default timeout (5 minutes). This can happen if pods are crash-looping or stuck pending.
-**Fix:**
+**Symptom:** 
+* Helm commands hang and eventually fail with `context deadline exceeded`.
 
-1.  Check pod status: `kubectl get pods -n <namespace>`. Look for `CrashLoopBackOff`, `Pending`, or pods that aren't reaching `Running`/`Ready`.
-2.  Check pod logs: `kubectl logs <pod-name> -n <namespace>`.
-3.  Describe pod: `kubectl describe pod <pod-name> -n <namespace>` to see events and detailed errors.
-4.  Increase Helm timeout: Use `--timeout 10m` (for 10 minutes) with your Helm commands.
+**Root Cause:** 
+* The Kubernetes cluster is unresponsive, or the pods Helm is waiting for (`--wait`) are not becoming ready within the default timeout (5 minutes). 
+* This can happen if pods are crash-looping or stuck pending.
+
+**Fix:**
+1. **Check pod status:** 
+   1. `kubectl get pods -n <namespace>`. 
+   2. Look for `CrashLoopBackOff`, `Pending`, or pods that aren't reaching `Running`/`Ready`.
+2. **Check pod logs:** `kubectl logs <pod-name> -n <namespace>`.
+3. **Describe pod:** `kubectl describe pod <pod-name> -n <namespace>` to see events and detailed errors.
+4. **Increase Helm timeout:** Use `--timeout 10m` (for 10 minutes) with your Helm commands.
 
 #### 10.8. Resources not being destroyed by `cleanup.sh`
 
-**Symptom:** After running `cleanup.sh`, some resources (like the Kind cluster or Docker images) persist.
-**Root Cause:** Permissions issues, or the resource name is slightly different than what the script expects, or a resource is stuck.
+**Symptom:** 
+* After running `cleanup.sh`, some resources (like the Kind cluster or Docker images) persist.
+
+**Root Cause:** 
+* Permissions issues, or the resource name is slightly different than what the script expects, or a resource is stuck.
 **Fix:**
 
-1.  Run `cleanup.sh` again.
-2.  Manually inspect:
-      * Kind clusters: `kind get clusters`
-      * Docker images: `docker images`
-      * Docker containers: `docker ps -a`
-      * Kubernetes namespaces: `kubectl get ns`
-3.  Manually delete:
+1. Run `cleanup.sh` again.
+2. **Manually inspect:**
+    * **Kind clusters:** `kind get clusters`
+    * **Docker images:** `docker images`
+    * **Docker containers:** `docker ps -a`
+    * **Kubernetes namespaces:** `kubectl get ns`
+3. **Manually delete:**
       * `kind delete cluster --name <cluster-name>`
       * `docker rmi <image-id>`
       * `docker rm <container-id>`
@@ -510,68 +546,88 @@ While the load generation is running, switch back to your browser with the Grafa
 
 #### 10.9. Symptom: `/ready` Endpoint Returns "404 Not Found"
 
-**Problem:** When testing the `/ready` endpoint, you receive a "404 Not Found" error instead of "Ready".
-**Root Cause:** This typically indicates that the application's HTTP server is running, but the `/ready` handler either isn't registered correctly or there's a routing issue within the application preventing that path from being handled.
-**Fix:**
+**Problem:** 
+* When testing the `/ready` endpoint, you receive a "404 Not Found" error instead of "Ready".
 
-1.  **Verify `main.go`:** Ensure `main.go` correctly registers the `/ready` endpoint handler (e.g., `router.HandleFunc("/ready", appHandler.ReadinessCheck).Methods("GET")`).
-2.  **Check Application Logs:** If the app starts but the endpoint returns 404, check the application's logs for any startup errors related to routing or handler registration.
+**Root Cause:** 
+* This typically indicates that the application's HTTP server is running, but the `/ready` handler either isn't registered correctly or there's a routing issue within the application preventing that path from being handled.
+
+**Fix:**
+1. **Verify `main.go`:** 
+   1. Ensure `main.go` correctly registers the `/ready` endpoint handler (e.g., `router.HandleFunc("/ready", appHandler.ReadinessCheck).Methods("GET")`).
+2. **Check Application Logs:** 
+   1. If the app starts but the endpoint returns 404, check the application's logs for any startup errors related to routing or handler registration.
 
 #### 10.10. Symptom: Docker Build Fails with "parent snapshot does not exist" or "rpc error"
 
-**Problem:** Docker build command fails with errors like `failed to solve: parent snapshot does not exist` or `rpc error: code = Unknown desc = failed to solve: rpc error: code = Canceled desc = context canceled`.
-**Root Cause:** These are often transient Docker buildkit issues, corrupted Docker cache, or low disk space/memory for Docker Desktop.
-**Fix:**
+**Problem:** 
+* Docker build command fails with errors like `failed to solve: parent snapshot does not exist` or `rpc error: code = Unknown desc = failed to solve: rpc error: code = Canceled desc = context canceled`.
 
-1.  **Clean Docker Build Cache:** `docker builder prune -a`
-2.  **Restart Docker Desktop:** A full restart often resolves these issues.
-3.  **Check Disk Space:** Ensure your Docker Desktop has sufficient disk space allocated and that your machine has enough free disk space.
-4.  **Increase Docker Desktop Resources:** In Docker Desktop settings, increase CPU and Memory allocated to the Docker engine.
+**Root Cause:** 
+* These are often transient Docker buildkit issues, corrupted Docker cache, or low disk space/memory for Docker Desktop.
+
+**Fix:**
+1. **Clean Docker Build Cache:** `docker builder prune -a`
+2. **Restart Docker Desktop:** A full restart often resolves these issues.
+3. **Check Disk Space:** Ensure your Docker Desktop has sufficient disk space allocated and that your machine has enough free disk space.
+4. **Increase Docker Desktop Resources:** In Docker Desktop settings, increase CPU and Memory allocated to the Docker engine.
 
 #### 10.11. Symptom: Kubernetes Ingress Verification Fails (Status: 000)
 
 **Problem:** The `app_build_and_verification.sh` script's Kubernetes Ingress verification step fails, typically showing a `Status: 000` or connection refused.
 **Root Cause:**
 
-  * **Ingress Controller Not Ready:** The NGINX Ingress controller (part of `kube-prometheus-stack` or separately installed) might not be fully ready or its service might not be exposed on a host port accessible by `curl`.
-  * **macOS Specific Routing:** On macOS, `kind` clusters (and Docker Desktop's Kubernetes) often have difficulty routing external traffic back into the cluster's Ingress controller via `localhost`. While Windows and Linux often work with `localhost`, macOS might require different network configurations or direct pod IP access (which is less stable for testing).
-    **Fix:**
-
-1.  **Verify Ingress Controller:**
+* **Ingress Controller Not Ready:** 
+  * The NGINX Ingress controller (part of `kube-prometheus-stack` or separately installed) might not be fully ready or its service might not be exposed on a host port accessible by `curl`.
+* **macOS Specific Routing:** 
+  * On macOS, `kind` clusters (and Docker Desktop's Kubernetes) often have difficulty routing external traffic back into the cluster's Ingress controller via `localhost`. 
+  * While Windows and Linux often work with `localhost`, macOS might require different network configurations or direct pod IP access (which is less stable for testing).
+    
+**Fix:**
+1. **Verify Ingress Controller:**
     ```bash
     kubectl get pods -n prometheus-operator -l app.kubernetes.io/name=ingress-nginx
     kubectl get svc -n prometheus-operator -l app.kubernetes.io/name=ingress-nginx
     ```
-    Ensure the `ingress-nginx` controller pod is `Running` and its service has external access (e.g., NodePort on Kind).
-2.  **Focus on Port-Forwarding:** For local testing, rely on `kubectl port-forward` directly to the Key Server service (as done in the `app_build_and_verification.sh` script's later API tests, and detailed in **8.2/8.3** and **9.2**) rather than Ingress for verification. The Ingress can still be useful for other internal cluster routing, but direct host verification can be tricky locally.
-3.  **Check Ingress Resource Status:** `kubectl get ingress -n default` to see if your Ingress is configured and has an address.
+  * Ensure the `ingress-nginx` controller pod is `Running` and its service has external access (e.g., NodePort on Kind).
+
+2. **Focus on Port-Forwarding:** 
+   1. For local testing, rely on `kubectl port-forward` directly to the Key Server service (as done in the `app_build_and_verification.sh` script's later API tests, and detailed in **8.2/8.3** and **9.2**) rather than Ingress for verification. 
+   2. The Ingress can still be useful for other internal cluster routing, but direct host verification can be tricky locally.
+3. **Check Ingress Resource Status:** 
+   1. `kubectl get ingress -n default` to see if your Ingress is configured and has an address.
 
 #### 10.12. General Troubleshooting Tips
 
-  * **Read Logs:** Always check the logs of failing pods: `kubectl logs <pod-name> -n <namespace>`.
-  * **Describe Resources:** Use `kubectl describe <resource-type> <resource-name> -n <namespace>` to get detailed information about a resource's state, events, and configuration.
-  * **Clean Environment:** If you encounter persistent issues, run `cleanup.sh` and then `app_build_and_verification.sh` again for a fresh start.
-  * **Verify Port-Forwards:** Ensure all necessary `kubectl port-forward` commands are running in separate terminals.
-  * **Check Docker Desktop:** Make sure Docker Desktop is running and healthy.
+* **Read Logs:** Always check the logs of failing pods: `kubectl logs <pod-name> -n <namespace>`.
+* **Describe Resources:** Use `kubectl describe <resource-type> <resource-name> -n <namespace>` to get detailed information about a resource's state, events, and configuration.
+* **Clean Environment:** If you encounter persistent issues, run `cleanup.sh` and then `app_build_and_verification.sh` again for a fresh start.
+* **Verify Port-Forwards:** Ensure all necessary `kubectl port-forward` commands are running in separate terminals.
+* **Check Docker Desktop:** Make sure Docker Desktop is running and healthy.
 
 ### 10.13. Symptom: Cannot log in to Grafana Dashboard (unknown username)
 
-**Problem:** You try to log in to Grafana with username `admin` but get an "invalid username or password" error.
-**Root Cause:** The `grafana-admin-secret` was either not created, or it was created without the correct `admin-user` key, or a typo was made in the password during secret creation.
-**Fix:**
+**Problem:** 
+* You try to log in to Grafana with username `admin` but get an "invalid username or password" error.
 
-1.  **Retrieve Password:** Use the command from **8.3. Access Grafana UI** to retrieve the stored password:
+**Root Cause:** 
+* The `grafana-admin-secret` was either not created, or it was created without the correct `admin-user` key, or a typo was made in the password during secret creation.
+
+**Fix:**
+1. **Retrieve Password:** Use the command from **8.3. Access Grafana UI** to retrieve the stored password:
     ```bash
     kubectl --namespace prometheus-operator get secrets grafana-admin-secret \
       -o jsonpath="{.data.admin-password}" | base64 -d ; echo
     ```
     Copy this password carefully.
-2.  **Verify Secret Content:**
+2. **Verify Secret Content:**
     ```bash
     kubectl get secret grafana-admin-secret -n prometheus-operator -o yaml
     ```
     Look for `admin-user` and `admin-password` under `data` (they will be base64 encoded).
-3.  **Re-run Setup:** If still problematic, run `./cleanup.sh` followed by `./app_build_and_verification.sh` to recreate the secret cleanly. Ensure you enter a password when prompted.
+3. **Re-run Setup:** 
+   1. If still problematic, run `./cleanup.sh` followed by `./app_build_and_verification.sh` to recreate the secret cleanly. 
+   2. Ensure you enter a password when prompted.
 
 ### 10.14. Troubleshooting Grafana Dashboards & Metrics Display Issues (Deep Dive)
 
@@ -579,12 +635,19 @@ This section covers common and complex issues encountered when setting up Grafan
 
 #### Symptom: Prometheus Not Scraping Key Server Metrics (Targets DOWN)
 
-**Problem:** The Key Server application's metrics target appears `DOWN` in the Prometheus UI (`http://localhost:9090/targets`) or is not discovered at all.
+**Problem:** 
+* The Key Server application's metrics target appears `DOWN` in the Prometheus UI (`http://localhost:9090/targets`) or is not discovered at all.
 
 **Root Causes:**
 
-  * **ServiceMonitor Configuration Mismatch:** The Kubernetes `ServiceMonitor` resource for the Key Server application was configured with incorrect `port`, `scheme`, or `tlsConfig` settings, preventing Prometheus from successfully connecting to the `/metrics` endpoint. Specifically, if your application exposes metrics over HTTPS on port 8443, the `ServiceMonitor` must reflect this. For self-signed certificates, Prometheus needed to be told to skip TLS verification.
-  * **Prometheus Discovery Labels:** The `kube-prometheus-stack` (deployed by Helm) typically uses selectors to discover `ServiceMonitor`s. By default, it might look for `ServiceMonitor`s with the `release: prometheus-stack` label. If your Key Server's `ServiceMonitor` lacks this label, Prometheus's operator might ignore it.
+* **ServiceMonitor Configuration Mismatch:** 
+  * The Kubernetes `ServiceMonitor` resource for the Key Server application was configured with incorrect `port`, `scheme`, or `tlsConfig` settings, preventing Prometheus from successfully connecting to the `/metrics` endpoint. 
+  * Specifically, if your application exposes metrics over HTTPS on port 8443, the `ServiceMonitor` must reflect this. 
+  * For self-signed certificates, Prometheus needed to be told to skip TLS verification.
+* **Prometheus Discovery Labels:** 
+  * The `kube-prometheus-stack` (deployed by Helm) typically uses selectors to discover `ServiceMonitor`s.
+  * By default, it might look for `ServiceMonitor`s with the `release: prometheus-stack` label. 
+  * If your Key Server's `ServiceMonitor` lacks this label, Prometheus's operator might ignore it.
 
 **How to Verify/Fix:**
 
@@ -610,11 +673,15 @@ This section covers common and complex issues encountered when setting up Grafan
 
 #### Symptom: Grafana "Datasource prometheus was not found" Error
 
-**Problem:** When opening a Grafana dashboard, the browser's developer console (F12 -> Console) shows errors like `PanelQueryRunner Error {message: 'Datasource prometheus was not found'}`. This occurs even if you can manually see "Prometheus" listed under Grafana's "Data sources".
+**Problem:** 
+* When opening a Grafana dashboard, the browser's developer console (F12 -> Console) shows errors like `PanelQueryRunner Error {message: 'Datasource prometheus was not found'}`.
+* This occurs even if you can manually see "Prometheus" listed under Grafana's "Data sources".
 
 **Root Cause:**
 
-  * **Inconsistent Data Source UID:** Grafana dashboards, especially when provisioned from files, explicitly reference data sources by their Unique Identifier (UID). If the provisioned Prometheus data source doesn't have the exact UID expected by the dashboards (which is `prometheus` in our case), Grafana's panel runner cannot link the query to the correct data source.
+* **Inconsistent Data Source UID:**
+  * Grafana dashboards, especially when provisioned from files, explicitly reference data sources by their Unique Identifier (UID).
+  * If the provisioned Prometheus data source doesn't have the exact UID expected by the dashboards (which is `prometheus` in our case), Grafana's panel runner cannot link the query to the correct data source.
 
 **How to Verify/Fix:**
 
@@ -637,11 +704,14 @@ This section covers common and complex issues encountered when setting up Grafan
             editable: false
             uid: prometheus # <--- This line is CRUCIAL
     ```
-3.  **Solution:** The `app_build_and_verification.sh` script should ensure this ConfigMap is correctly applied. Re-running `cleanup.sh` followed by `app_build_and_verification.sh` will apply the correct configuration.
+3. **Solution:** 
+   1. The `app_build_and_verification.sh` script should ensure this ConfigMap is correctly applied. 
+   2. Re-running `cleanup.sh` followed by `app_build_and_verification.sh` will apply the correct configuration.
 
 #### Symptom: Grafana Dashboard Not Appearing
 
-**Problem:** After deploying Prometheus and Grafana, the Prometheus data source appears in Grafana, but the custom dashboards (**Key Server HTTP Overview**, **Key Server Key Generation**) are not visible.
+**Problem:** 
+* After deploying Prometheus and Grafana, the Prometheus data source appears in Grafana, but the custom dashboards (**Key Server HTTP Overview**, **Key Server Key Generation**) are not visible.
 
 **Diagnosis Process:**
 
@@ -720,12 +790,17 @@ By making these adjustments, the Grafana sidecar now correctly identifies and pr
 
 #### Symptom: Blank Grafana Panels / "Unexpected Error" Pop-ups
 
-**Problem:** Grafana dashboards would either show no data or display "An unexpected error happened" pop-ups, even after the data source was found. Prometheus confirmed it was scraping and had the data.
-**Root Causes:**
+**Problem:** 
+* Grafana dashboards would either show no data or display "An unexpected error happened" pop-ups, even after the data source was found. 
+* Prometheus confirmed it was scraping and had the data.
 
-  * **PromQL Query Label Mismatch (Subtle):** Even if the `job` label is correct, other labels (e.g., `code`, `length`, `handler`) used in `sum by (...)` aggregations or `legendFormat` might not exist on the metrics as expected, causing queries to return empty series.
-  * **Incorrect Metric Names:** Simple typos or incorrect metric names in the PromQL queries will result in no data.
-  * **Grafana UI Rendering Bug (Historical):** A specific color configuration (`"paletteColor"`) in the dashboard JSON caused a frontend rendering error in Grafana.
+**Root Causes:**
+  * **PromQL Query Label Mismatch (Subtle):** 
+    * Even if the `job` label is correct, other labels (e.g., `code`, `length`, `handler`) used in `sum by (...)` aggregations or `legendFormat` might not exist on the metrics as expected, causing queries to return empty series.
+  * **Incorrect Metric Names:** 
+    * Simple typos or incorrect metric names in the PromQL queries will result in no data.
+  * **Grafana UI Rendering Bug (Historical):** 
+    * A specific color configuration (`"paletteColor"`) in the dashboard JSON caused a frontend rendering error in Grafana.
 
 **Fixes Implemented:**
 
@@ -737,10 +812,15 @@ By making these adjustments, the Grafana sidecar now correctly identifies and pr
 
 #### Symptom: Blank Grafana Panels (No Data Displayed, No Errors)
 
-**Problem:** Grafana dashboards appeared but showed no data, and there were no errors in the UI or browser console. Prometheus's "Explore" view *did* show data for raw metrics.
-**Root Cause:**
+**Problem:** 
+* Grafana dashboards appeared but showed no data, and there were no errors in the UI or browser console. 
+* Prometheus's "Explore" view *did* show data for raw metrics.
 
-  * **`rate()` function interval mismatch:** The `rate()` function in PromQL, used in the dashboard queries, requires at least two data points within its specified time window to calculate a rate. If Grafana uses a dynamic `$__interval` variable, this window could sometimes be too small or misaligned with the Prometheus scrape interval (e.g., 15s scrape interval and 15s `$__interval`), leading to insufficient data points for `rate()` to reliably calculate. This results in an empty series being returned to Grafana, which then displays as "no data" on the panel.
+**Root Cause:**
+* **`rate()` function interval mismatch:** 
+  * The `rate()` function in PromQL, used in the dashboard queries, requires at least two data points within its specified time window to calculate a rate. 
+  * If Grafana uses a dynamic `$__interval` variable, this window could sometimes be too small or misaligned with the Prometheus scrape interval (e.g., 15s scrape interval and 15s `$__interval`), leading to insufficient data points for `rate()` to reliably calculate. 
+  * This results in an empty series being returned to Grafana, which then displays as "no data" on the panel.
 
 **How to Verify/Fix:**
 
@@ -757,12 +837,13 @@ By making these adjustments, the Grafana sidecar now correctly identifies and pr
 3.  **Adjust `rate()` Interval (The Common Solution):**
       * If your Prometheus scrape interval is 15s (default for `kube-prometheus-stack`), change the `rate()` interval in your dashboard JSONs to a slightly larger, fixed value like `[30s]` or `[1m]`. This gives `rate()` a wider window to find data points.
       * **Modify `http-overview.json` and `key-generation.json`:**
-        Change lines like:
+        **Change lines like:**
         `"expr": "rate(http_requests_total{job=\"key-server-key-server-app\"}[$__interval])"`
-        To:
+        **To:**
         `"expr": "rate(http_requests_total{job=\"key-server-key-server-app\"}[30s])"`
         (Apply similar changes for all `rate()` or `histogram_quantile(..., rate(...))` queries).
-4.  **Re-apply Dashboard ConfigMaps:** After modifying the JSON files, you must run `./cleanup.sh` followed by `./app_build_and_verification.sh` to redeploy the ConfigMaps and restart the Grafana pod so it picks up the new dashboard definitions.
+4. **Re-apply Dashboard ConfigMaps:** 
+    * After modifying the JSON files, you must run `./cleanup.sh` followed by `./app_build_and_verification.sh` to redeploy the ConfigMaps and restart the Grafana pod so it picks up the new dashboard definitions.
 
 
 -----
@@ -898,3 +979,6 @@ To manually deploy the application to Kubernetes using Helm (requires a running 
     ```bash
     helm uninstall key-server
     ```
+
+
+---
